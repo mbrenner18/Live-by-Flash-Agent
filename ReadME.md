@@ -25,3 +25,12 @@ Users can:
 ## ✨ Why It Matters
 
 The volume of AI research is overwhelming.
+
+## 🛠️ Quick Start (Local Setup)
+
+```bash
+git clone https://github.com/mbrenner18/Live-by-Flash-Agent.git
+cd Live-by-Flash-Agent
+npm install
+echo "GEMINI_API_KEY=your_api_key_here" > .env
+npm run dev
