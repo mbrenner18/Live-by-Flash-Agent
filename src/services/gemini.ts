@@ -9,8 +9,6 @@ if (!apiKey) {
 
 export const ai = new GoogleGenAI({ apiKey });
 
-export const ai = new GoogleGenAI({ apiKey });
-
 export function hasGeminiKey() {
   return !!apiKey;
 }
