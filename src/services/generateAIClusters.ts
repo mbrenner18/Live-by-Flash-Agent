@@ -1,33 +1,38 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/genai";
+import * as GenAI from "@google/genai";
 import type { AICluster, PaperRecord } from "../types";
 import { withRetry } from "./geminiRetry";
 
 /**
- * 1. Centralized Key Detection
- * Ensuring we check VITE_ prefixed variables for the browser.
+ * 1. Handle non-standard @google/genai exports
+ */
+const AnyGenAI = GenAI as any;
+const GoogleGenerativeAIClass = AnyGenAI.GoogleGenerativeAI || AnyGenAI.default?.GoogleGenerativeAI;
+const SchemaType = AnyGenAI.SchemaType || AnyGenAI.default?.SchemaType;
+
+/**
+ * 2. Centralized Key Detection
  */
 const rawKey = (import.meta.env?.VITE_GEMINI_API_KEY) || (process.env?.GEMINI_API_KEY) || "";
 const GEMINI_API_KEY = (rawKey === 'undefined' || !rawKey) ? '' : rawKey;
 
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const genAI = (GEMINI_API_KEY && GoogleGenerativeAIClass) ? new GoogleGenerativeAIClass(GEMINI_API_KEY) : null;
 
 /**
- * 2. Structured Output Schema
- * Using SchemaType (the correct export from @google/generative-ai)
+ * 3. Structured Output Schema
  */
 const clusterSchema = {
-  type: SchemaType.OBJECT,
+  type: SchemaType?.OBJECT || "OBJECT",
   properties: {
     clusters: {
-      type: SchemaType.ARRAY,
+      type: SchemaType?.ARRAY || "ARRAY",
       items: {
-        type: SchemaType.OBJECT,
+        type: SchemaType?.OBJECT || "OBJECT",
         properties: {
-          label: { type: SchemaType.STRING },
-          subtitle: { type: SchemaType.STRING },
+          label: { type: SchemaType?.STRING || "STRING" },
+          subtitle: { type: SchemaType?.STRING || "STRING" },
           paperIds: {
-            type: SchemaType.ARRAY,
-            items: { type: SchemaType.STRING }
+            type: SchemaType?.ARRAY || "ARRAY",
+            items: { type: SchemaType?.STRING || "STRING" }
           }
         },
         required: ["label", "subtitle", "paperIds"]
@@ -45,17 +50,16 @@ export async function generateAIClusters(
   if (!papers.length) return [];
 
   if (!genAI || !GEMINI_API_KEY) {
-    console.warn("Missing GEMINI_API_KEY, using local fallback clusters.");
+    console.warn("Missing GEMINI_API_KEY or initialization failed, using local fallback.");
     return safeFallbackClusters(papers);
   }
 
-  // Use a valid model name like 'gemini-1.5-flash' or 'gemini-2.0-flash'
   const model = genAI.getGenerativeModel({ 
     model: "gemini-1.5-flash",
     systemInstruction: "You are a research clustering assistant. Always return a valid JSON object. Do not include markdown formatting.",
   });
 
-  const prompt = `[Your Clustering Prompt Here]`; // Keep your existing prompt
+  const prompt = `[Your Clustering Prompt Here]`; 
 
   try {
     const result = await withRetry(() => 
@@ -68,15 +72,12 @@ export async function generateAIClusters(
       })
     );
 
-    // Simplest way to get the response text
-    const rawText = result.response.text();
+    // Safer text extraction for the non-standard package
+    const rawText = typeof result.response.text === 'function' 
+      ? result.response.text() 
+      : (result.response as any).text;
     
-    // Use your existing extractJsonObject logic for safety
-    const parsed = extractJsonObject(rawText);
-    const clusters = Array.isArray(parsed?.clusters) ? parsed.clusters : [];
-
-    // ... [Keep your normalization, deduplication, and missing-id logic] ...
-
+    // ... [Keep your extractJsonObject, normalization, and missing-id logic] ...
     return normalized.length ? normalized : safeFallbackClusters(papers);
   } catch (error) {
     console.error("Gemini Clustering Error:", error);
