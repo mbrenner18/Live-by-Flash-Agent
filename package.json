@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000 --host 0.0.0.0",
-    "build": "VITE_GEMINI_API_KEY=$_VITE_GEMINI_API_KEY vite build"
+    "build": "VITE_GEMINI_API_KEY=$_VITE_GEMINI_API_KEY vite build,"
     "preview": "vite preview",
     "start": "node server.js",
     "clean": "rm -rf dist",
