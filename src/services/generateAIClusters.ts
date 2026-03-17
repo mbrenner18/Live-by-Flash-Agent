@@ -2,24 +2,37 @@ import * as GenAI from "@google/genai";
 import type { AICluster, PaperRecord } from "../types";
 import { withRetry } from "./geminiRetry";
 
-/**
- * 1. Handle non-standard @google/genai exports
- */
 const AnyGenAI = GenAI as any;
 const GoogleGenerativeAIClass = AnyGenAI.GoogleGenerativeAI || AnyGenAI.default?.GoogleGenerativeAI;
 const SchemaType = AnyGenAI.SchemaType || AnyGenAI.default?.SchemaType;
 
-/**
- * 2. Centralized Key Detection
- */
 const rawKey = (import.meta.env?.VITE_GEMINI_API_KEY) || (process.env?.GEMINI_API_KEY) || "";
 const GEMINI_API_KEY = (rawKey === 'undefined' || !rawKey) ? '' : rawKey;
 
 const genAI = (GEMINI_API_KEY && GoogleGenerativeAIClass) ? new GoogleGenerativeAIClass(GEMINI_API_KEY) : null;
 
 /**
- * 3. Structured Output Schema
+ * 1. MISSING HELPERS (The "Safety Net")
+ * These prevent the "ReferenceError: safeFallbackClusters is not defined" crash.
  */
+function normalizeLabel(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
+}
+
+function safeFallbackClusters(papers: PaperRecord[]): AICluster[] {
+  console.log("[DEBUG] Using local fallback clustering logic.");
+  if (!papers.length) return [];
+  
+  // Group by broad category or just return one big group to keep the UI alive
+  return [{
+    id: 'fallback-cluster',
+    label: 'Research Papers',
+    subtitle: `${papers.length} papers identified`,
+    paperIds: papers.map(p => p.id),
+    color: 'var(--primary)'
+  }];
+}
+
 const clusterSchema = {
   type: SchemaType?.OBJECT || "OBJECT",
   properties: {
@@ -42,24 +55,24 @@ const clusterSchema = {
   required: ["clusters"]
 };
 
-// ... [Keep your normalizeLabel and safeFallbackClusters helpers as they are] ...
-
 export async function generateAIClusters(
   papers: PaperRecord[],
 ): Promise<AICluster[]> {
   if (!papers.length) return [];
 
+  // If API key is missing, we use the fallback instead of throwing an error
   if (!genAI || !GEMINI_API_KEY) {
-    console.warn("Missing GEMINI_API_KEY or initialization failed, using local fallback.");
+    console.warn("Missing GEMINI_API_KEY, using local fallback.");
     return safeFallbackClusters(papers);
   }
 
   const model = genAI.getGenerativeModel({ 
     model: "gemini-1.5-flash",
-    systemInstruction: "You are a research clustering assistant. Always return a valid JSON object. Do not include markdown formatting.",
   });
 
-  const prompt = `[Your Clustering Prompt Here]`; 
+  const prompt = `Analyze these research papers and group them into logical clusters:
+    ${papers.map(p => `ID: ${p.id}, Title: ${p.title}`).join('\n')}
+    Return JSON with "clusters" array.`; 
 
   try {
     const result = await withRetry(() => 
@@ -72,15 +85,16 @@ export async function generateAIClusters(
       })
     );
 
-    // Safer text extraction for the non-standard package
-    const rawText = typeof result.response.text === 'function' 
-      ? result.response.text() 
-      : (result.response as any).text;
-    
-    // ... [Keep your extractJsonObject, normalization, and missing-id logic] ...
-    return normalized.length ? normalized : safeFallbackClusters(papers);
-  } catch (error) {
-    console.error("Gemini Clustering Error:", error);
-    return safeFallbackClusters(papers);
-  }
-}
+    const response = await result.response;
+    const rawText = response.text();
+    const data = JSON.parse(rawText);
+
+    if (!data.clusters) return safeFallbackClusters(papers);
+
+    return data.clusters.map((c: any, index: number) => ({
+      id: `cluster-${index}`,
+      label: normalizeLabel(c.label),
+      subtitle: c.subtitle,
+      paperIds: c.paperIds,
+      color: `hsl(${(index * 137) % 360}, 70%, 50%)`
+    }));
