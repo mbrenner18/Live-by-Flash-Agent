@@ -4,13 +4,15 @@ import { withRetry } from "./geminiRetry";
 const AnyGenAI = GenAI as any;
 const GoogleGenerativeAIClass = AnyGenAI.GoogleGenerativeAI || AnyGenAI.default?.GoogleGenerativeAI;
 
-const rawKey = import.meta.env.VITE_GEMINI_API_KEY || "";
-const apiKey = (rawKey === 'undefined' || !rawKey) ? '' : rawKey;
-
 export async function generateResearchImage(prompt: string): Promise<string | null> {
-  if (!apiKey || !GoogleGenerativeAIClass) {
-    console.error("[DEBUG] CRITICAL: API Key missing or SDK failed to load.");
-    return null;
+  // Move key detection inside the function to ensure it's fresh
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+
+  if (!apiKey || apiKey === 'undefined' || !GoogleGenerativeAIClass) {
+    console.error("[DEBUG] CRITICAL: API Key missing at execution time.");
+    // Return a generic research-themed placeholder instead of null 
+    // to stop the App.tsx loop from crashing.
+    return "https://images.unsplash.com/photo-1532094349884-543bc11b234d?auto=format&fit=crop&q=80&w=500";
   }
 
   const genAI = new GoogleGenerativeAIClass(apiKey);
@@ -28,7 +30,7 @@ export async function generateResearchImage(prompt: string): Promise<string | nu
 
     console.log("[DEBUG] Gemini Text Response:", text);
 
-    // 1. Check for actual binary data (Rare for Flash 2.0)
+    // 1. Check for actual binary data
     const parts = response.candidates?.[0]?.content?.parts ?? [];
     for (const part of parts) {
       if (part.inlineData?.data) {
@@ -36,12 +38,10 @@ export async function generateResearchImage(prompt: string): Promise<string | nu
       }
     }
 
-    // 2. Fallback: If it's just text, let's treat the text as a prompt for a placeholder
-    // This ensures your UI actually shows SOMETHING instead of staying null
-    if (text && text.length > 10) {
-      console.log("[DEBUG] No binary data. Using text-based placeholder.");
-      const encodedPrompt = encodeURIComponent(text.slice(0, 100));
-      return `https://pollinations.ai/p/${encodedPrompt}?width=512&height=512&nologo=true`;
+    // 2. Fallback to Image Generator
+    if (text) {
+      const encodedPrompt = encodeURIComponent(text.slice(0, 150));
+      return `https://pollinations.ai/p/${encodedPrompt}?width=512&height=512&seed=42&nologo=true`;
     }
 
     return null;
