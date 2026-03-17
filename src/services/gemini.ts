@@ -9,7 +9,6 @@ if (!apiKey) {
 }
 
 // 2. Initialize with Gemini 1.5 Flash (highly recommended for stability/speed)
-// Or use 'gemini-3.1-pro-preview' if you have specific 3.1 features enabled
 export const genAI = new GoogleGenAI(apiKey);
 export const model = genAI.getGenerativeModel({ 
   model: 'gemini-1.5-flash' 
@@ -51,6 +50,7 @@ export type ReadPaperResult = {
   retrievalStatus?: string;
 };
 
+// This handles specific URL reading/summarization
 export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
   const domain = domainFromUrl(url);
 
@@ -74,7 +74,21 @@ export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
 }
 
 /**
- * THE FIX: Added the missing export that caused your build error
+ * NEW EXPORT: Required by src/App.tsx
+ * General purpose text generation
+ */
+export async function generateTextFromGemini(prompt: string): Promise<string> {
+  try {
+    const result = await model.generateContent(prompt);
+    return extractTextFromResponse(result);
+  } catch (error) {
+    console.error('General Gemini Text Generation Failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * EXPORT: Used by the paper enrichment logic
  */
 export async function enrichPaperRecordFromUrl(
   paper: PaperRecord,
