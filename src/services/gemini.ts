@@ -1,11 +1,14 @@
 import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
-const apiKey = process.env.GEMINI_API_KEY || '';
+// HARDCODED FIX FOR HACKATHON DEPLOYMENT
+const apiKey = "AIzaSyAdCBm4oJVHByi1b36V0UZuh_s4LOqWA9Q"; 
 
 if (!apiKey) {
   console.warn('Missing GEMINI_API_KEY');
 }
+
+export const ai = new GoogleGenAI({ apiKey });
 
 export const ai = new GoogleGenAI({ apiKey });
 
