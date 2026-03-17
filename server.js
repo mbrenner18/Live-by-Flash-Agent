@@ -11,7 +11,10 @@ const distPath = path.join(__dirname, 'dist');
 
 app.use(express.static(distPath));
 
-app.get('*', (_req, res) => {
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/assets/')) {
+    return res.status(404).send('Asset not found');
+  }
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
