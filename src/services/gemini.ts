@@ -1,9 +1,8 @@
-import { GoogleGenerativeAI } from '@google/genai';
+import * as GenAI from '@google/genai';
 import type { PaperRecord } from '../types';
 
 /**
  * 1. Robust Key Detection
- * Checks for Vite environment variables or process fallbacks.
  */
 const rawKey = 
   (import.meta.env?.VITE_GEMINI_API_KEY) || 
@@ -18,9 +17,13 @@ if (!apiKey) {
 
 /**
  * 2. Initialization
- * Exporting as null-capable to prevent the "Black Screen" if the key is missing.
+ * We use a type cast here because @google/genai's export structure 
+ * is causing the Rollup "not exported" error.
  */
-export const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+const AnyGenAI = GenAI as any;
+const GoogleGenerativeAIClass = AnyGenAI.GoogleGenerativeAI || AnyGenAI.default?.GoogleGenerativeAI;
+
+export const genAI = (apiKey && GoogleGenerativeAIClass) ? new GoogleGenerativeAIClass(apiKey) : null;
 export const model = genAI ? genAI.getGenerativeModel({ 
   model: 'gemini-1.5-flash' 
 }) : null;
@@ -48,7 +51,11 @@ function fallbackTitleFromUrl(url: string): string {
 }
 
 function extractTextFromResponse(response: any): string {
-  const text = response.response?.text?.();
+  // Support both standard SDK and potential wrapper response shapes
+  const text = typeof response.response?.text === 'function' 
+    ? response.response.text() 
+    : response.text;
+    
   if (text) return text.trim();
   return "No summary generated.";
 }
