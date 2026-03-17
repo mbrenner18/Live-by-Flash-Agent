@@ -1,8 +1,7 @@
 /**
  * Utility for retrying Gemini API calls with exponential backoff.
- * Specifically handles 429 (Resource Exhausted) errors.
+ * Specifically handles 429 (Resource Exhausted) and 503 (Service Unavailable) errors.
  */
-
 export async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries: number = 3,
@@ -16,20 +15,32 @@ export async function withRetry<T>(
     } catch (error: any) {
       lastError = error;
       
-      // Check if it's a 429 error
-      const isRateLimit = 
-        error?.message?.includes("429") || 
-        error?.message?.includes("RESOURCE_EXHAUSTED") ||
-        error?.status === 429;
+      // Determine if the error is a temporary rate limit or server hiccup
+      const status = error?.status || error?.response?.status;
+      const message = error?.message?.toUpperCase() || "";
+      
+      const isRetryable = 
+        status === 429 || 
+        status === 503 ||
+        message.includes("429") || 
+        message.includes("RESOURCE_EXHAUSTED") ||
+        message.includes("SERVICE_UNAVAILABLE");
         
-      if (isRateLimit && attempt < maxRetries) {
-        const delay = initialDelay * Math.pow(2, attempt);
-        console.warn(`[Gemini] Rate limit hit. Retrying in ${delay}ms... (Attempt ${attempt + 1}/${maxRetries})`);
+      if (isRetryable && attempt < maxRetries) {
+        // Exponential backoff: 2s, 4s, 8s...
+        // Plus random jitter (up to 1000ms) to desynchronize simultaneous retries
+        const jitter = Math.random() * 1000;
+        const delay = (initialDelay * Math.pow(2, attempt)) + jitter;
+        
+        console.warn(
+          `[Gemini Retry] ${status || 'Error'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt + 1}/${maxRetries})`
+        );
+        
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
       
-      // If not a rate limit or we've exhausted retries, throw
+      // If it's a 400 (Bad Request) or we've run out of retries, stop immediately
       throw error;
     }
   }
