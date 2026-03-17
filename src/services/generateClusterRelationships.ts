@@ -1,6 +1,13 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/genai";
+import * as GenAI from "@google/genai";
 import type { ClusterRecord } from "../types";
 import { withRetry } from "./geminiRetry";
+
+/**
+ * 1. Handle non-standard @google/genai exports
+ */
+const AnyGenAI = GenAI as any;
+const GoogleGenerativeAIClass = AnyGenAI.GoogleGenerativeAI || AnyGenAI.default?.GoogleGenerativeAI;
+const SchemaType = AnyGenAI.SchemaType || AnyGenAI.default?.SchemaType;
 
 export type ClusterRelationshipType = "agreement" | "disagreement" | "weak";
 
@@ -15,27 +22,27 @@ export type ClusterRelationship = {
 const rawKey = (import.meta.env?.VITE_GEMINI_API_KEY) || (process.env?.GEMINI_API_KEY) || "";
 const GEMINI_API_KEY = (rawKey === 'undefined' || !rawKey) ? '' : rawKey;
 
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const genAI = (GEMINI_API_KEY && GoogleGenerativeAIClass) ? new GoogleGenerativeAIClass(GEMINI_API_KEY) : null;
 
 /**
- * Logic for Structured Output Schema
+ * 2. Structured Output Schema with fallbacks for type strings
  */
 const relationshipSchema = {
   description: "List of relationships between research clusters",
-  type: SchemaType.OBJECT,
+  type: SchemaType?.OBJECT || "OBJECT",
   properties: {
     relationships: {
-      type: SchemaType.ARRAY,
+      type: SchemaType?.ARRAY || "ARRAY",
       items: {
-        type: SchemaType.OBJECT,
+        type: SchemaType?.OBJECT || "OBJECT",
         properties: {
-          source: { type: SchemaType.STRING },
-          target: { type: SchemaType.STRING },
+          source: { type: SchemaType?.STRING || "STRING" },
+          target: { type: SchemaType?.STRING || "STRING" },
           type: { 
-            type: SchemaType.STRING, 
+            type: SchemaType?.STRING || "STRING", 
             enum: ["agreement", "disagreement", "weak"] 
           },
-          reason: { type: SchemaType.STRING }
+          reason: { type: SchemaType?.STRING || "STRING" }
         },
         required: ["source", "target", "type", "reason"]
       }
@@ -58,27 +65,30 @@ export async function generateClusterRelationships(
   }
 
   const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.0-flash", // Use a valid model name
+    model: "gemini-2.0-flash", 
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: relationshipSchema,
     }
   });
 
-  const prompt = `[Your Prompt Text Here]`; // Keep your existing prompt
+  const prompt = `[Your Prompt Text Here]`; 
 
   try {
     const result = await withRetry(() => 
       model.generateContent(prompt)
     );
 
-    // The SDK provides a helper to get text from the response
-    const rawText = result.response.text();
+    // Safer text extraction for the non-standard package
+    const rawText = typeof result.response.text === 'function' 
+      ? result.response.text() 
+      : (result.response as any).text;
+
     const parsed = JSON.parse(rawText);
     
     // ... [Keep your normalization and validation logic] ...
     
-    return normalized;
+    return parsed.relationships || []; 
   } catch (error) {
     console.error("Gemini relationship generation failed:", error);
     return safeFallbackRelationships(clusters);
