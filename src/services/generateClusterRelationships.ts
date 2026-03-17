@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType } from "@google/genai";
 import type { ClusterRecord } from "../types";
 import { withRetry } from "./geminiRetry";
 
