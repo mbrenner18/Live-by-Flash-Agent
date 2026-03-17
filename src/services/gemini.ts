@@ -1,21 +1,32 @@
 import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
-// 1. Grab the key from the Vite environment
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+/**
+ * 1. Robust Key Detection
+ * We check import.meta.env (Vite standard) 
+ * AND process.env (what we just set in vite.config.ts)
+ */
+const apiKey = 
+  (import.meta.env?.VITE_GEMINI_API_KEY) || 
+  (process.env?.VITE_GEMINI_API_KEY) || 
+  '';
 
 if (!apiKey) {
   console.error('❌ CRITICAL: VITE_GEMINI_API_KEY is not defined in the environment.');
 }
 
-// 2. Initialize with Gemini 1.5 Flash (highly recommended for stability/speed)
-export const genAI = new GoogleGenAI(apiKey);
-export const model = genAI.getGenerativeModel({ 
+/**
+ * 2. Initialization
+ * We use a "lazy" check for the model to prevent the app from crashing 
+ * immediately if the key is missing (the "Black Screen" fix).
+ */
+export const genAI = apiKey ? new GoogleGenAI(apiKey) : null;
+export const model = genAI ? genAI.getGenerativeModel({ 
   model: 'gemini-1.5-flash' 
-});
+}) : null;
 
 export function hasGeminiKey() {
-  return !!apiKey;
+  return !!apiKey && !!model;
 }
 
 /** * HELPER FUNCTIONS 
@@ -50,21 +61,19 @@ export type ReadPaperResult = {
   retrievalStatus?: string;
 };
 
-// This handles specific URL reading/summarization
 export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
-  const domain = domainFromUrl(url);
-
   if (!hasGeminiKey()) {
     return {
       ok: false,
       title: fallbackTitleFromUrl(url),
-      abstract: `API Key Missing. Deployment requires VITE_GEMINI_API_KEY in Cloud Build.`,
+      abstract: `API Key Missing. Deployment requires VITE_GEMINI_API_KEY.`,
       retrievalStatus: 'MISSING_API_KEY',
     };
   }
 
   try {
-    const result = await model.generateContent(`Summarize this URL: ${url}`);
+    // We use non-null assertion (!) because hasGeminiKey() verified model exists
+    const result = await model!.generateContent(`Summarize this URL: ${url}`);
     const text = extractTextFromResponse(result);
     return { ok: true, title: 'Success', abstract: text }; 
   } catch (error) {
@@ -73,13 +82,13 @@ export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
   }
 }
 
-/**
- * NEW EXPORT: Required by src/App.tsx
- * General purpose text generation
- */
 export async function generateTextFromGemini(prompt: string): Promise<string> {
+  if (!hasGeminiKey()) {
+    throw new Error("Gemini API Key is missing or model failed to initialize.");
+  }
+
   try {
-    const result = await model.generateContent(prompt);
+    const result = await model!.generateContent(prompt);
     return extractTextFromResponse(result);
   } catch (error) {
     console.error('General Gemini Text Generation Failed:', error);
@@ -87,9 +96,6 @@ export async function generateTextFromGemini(prompt: string): Promise<string> {
   }
 }
 
-/**
- * EXPORT: Used by the paper enrichment logic
- */
 export async function enrichPaperRecordFromUrl(
   paper: PaperRecord,
 ): Promise<PaperRecord> {
