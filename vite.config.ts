@@ -6,31 +6,41 @@ import { defineConfig, loadEnv } from 'vite';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
 
-  // Look in .env files AND the actual system environment variables
-  const geminiKey = env.VITE_GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || env._VITE_GEMINI_API_KEY || '';
+  const geminiKey =
+    env._VITE_GEMINI_API_KEY ||
+    env.VITE_GEMINI_API_KEY ||
+    env.GEMINI_API_KEY ||
+    '';
 
   return {
-    // Changing this to '/' fixes the MIME type issue for Express-served apps
-    base: '/', 
-    
+    base: '/',
+
     plugins: [react(), tailwindcss()],
-    
+
     define: {
       'process.env.VITE_GEMINI_API_KEY': JSON.stringify(geminiKey),
-      'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(geminiKey),
     },
-    
+
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
     },
 
+    server: {
+      host: '0.0.0.0',
+      port: 8080,
+    },
+
+    preview: {
+      host: '0.0.0.0',
+      port: 8080,
+      allowedHosts: true,
+    },
+
     build: {
       outDir: 'dist',
       emptyOutDir: true,
-      // Helps debug if the key was actually baked in
-      sourcemap: true, 
-    }
+    },
   };
 });
