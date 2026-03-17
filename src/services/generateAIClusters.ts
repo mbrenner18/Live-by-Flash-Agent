@@ -11,19 +11,12 @@ const GEMINI_API_KEY = (rawKey === 'undefined' || !rawKey) ? '' : rawKey;
 
 const genAI = (GEMINI_API_KEY && GoogleGenerativeAIClass) ? new GoogleGenerativeAIClass(GEMINI_API_KEY) : null;
 
-/**
- * 1. MISSING HELPERS (The "Safety Net")
- * These prevent the "ReferenceError: safeFallbackClusters is not defined" crash.
- */
 function normalizeLabel(label: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
 }
 
 function safeFallbackClusters(papers: PaperRecord[]): AICluster[] {
-  console.log("[DEBUG] Using local fallback clustering logic.");
   if (!papers.length) return [];
-  
-  // Group by broad category or just return one big group to keep the UI alive
   return [{
     id: 'fallback-cluster',
     label: 'Research Papers',
@@ -60,9 +53,7 @@ export async function generateAIClusters(
 ): Promise<AICluster[]> {
   if (!papers.length) return [];
 
-  // If API key is missing, we use the fallback instead of throwing an error
   if (!genAI || !GEMINI_API_KEY) {
-    console.warn("Missing GEMINI_API_KEY, using local fallback.");
     return safeFallbackClusters(papers);
   }
 
@@ -89,12 +80,20 @@ export async function generateAIClusters(
     const rawText = response.text();
     const data = JSON.parse(rawText);
 
-    if (!data.clusters) return safeFallbackClusters(papers);
+    if (!data.clusters || !Array.isArray(data.clusters)) {
+      return safeFallbackClusters(papers);
+    }
 
     return data.clusters.map((c: any, index: number) => ({
       id: `cluster-${index}`,
-      label: normalizeLabel(c.label),
-      subtitle: c.subtitle,
-      paperIds: c.paperIds,
+      label: normalizeLabel(c.label || 'Uncategorized'),
+      subtitle: c.subtitle || '',
+      paperIds: c.paperIds || [],
       color: `hsl(${(index * 137) % 360}, 70%, 50%)`
     }));
+
+  } catch (error) {
+    console.error("Gemini Clustering Error:", error);
+    return safeFallbackClusters(papers);
+  }
+}
