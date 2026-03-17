@@ -6,34 +6,48 @@ import fs from 'fs';
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Use process.cwd() to ensure we're at the root of the deployed app
-const root = process.cwd();
-const distPath = path.resolve(root, 'dist');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Use process.cwd() as a backup, but __dirname is usually safer in ES modules
+const distPath = path.resolve(__dirname, 'dist');
 
-console.log(`Server starting...`);
-console.log(`Root directory: ${root}`);
-console.log(`Looking for assets in: ${distPath}`);
+console.log(`--- Deployment Debug Info ---`);
+console.log(`Working Dir: ${process.cwd()}`);
+console.log(`Dist Path: ${distPath}`);
 
-// 1. Static Middleware (CRITICAL: Must be first)
-// 'immutable' and 'maxAge' help Cloud Run/CDNs cache your hashed Vite assets
+// 1. DIRECTORY VERIFICATION: This will print the contents of 'dist' to your Cloud Run logs
+if (fs.existsSync(distPath)) {
+  const contents = fs.readdirSync(distPath);
+  console.log(`✅ Dist folder found. Contents: ${contents.join(', ')}`);
+} else {
+  console.error(`❌ CRITICAL: Dist folder NOT FOUND at ${distPath}`);
+}
+
+// 2. Serve static assets with long-term caching for hashed files
 app.use(express.static(distPath, {
   immutable: true,
   maxAge: '1y',
-  fallthrough: true // If file not found, continue to the catch-all
+  fallthrough: true 
 }));
 
-// 2. SPA Catch-all
+// 3. SPA Catch-all with Cache-Busting for index.html
 app.get('*', (req, res) => {
-  const indexPath = path.join(distPath, 'index.html');
-  
-  // Extra safety: If the browser is specifically asking for a .js file 
-  // and we reached this point, the file is physically missing.
-  if (req.path.endsWith('.js') || req.path.endsWith('.css')) {
-    console.error(`Asset not found: ${req.path}`);
-    return res.status(404).send('Asset not found');
+  // If a request for a JS/CSS file reaches here, it definitely doesn't exist
+  if (req.path.match(/\.(js|css|png|jpg|svg)$/)) {
+    console.error(`Missing Asset: ${req.path}`);
+    return res.status(404).send('Not Found');
   }
 
-  res.sendFile(indexPath);
+  const indexPath = path.join(distPath, 'index.html');
+  
+  if (fs.existsSync(indexPath)) {
+    // CRITICAL: Prevent the browser from caching index.html so it always
+    // looks for the newest JS/CSS hashes after a deployment.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).send('Site index not found');
+  }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
