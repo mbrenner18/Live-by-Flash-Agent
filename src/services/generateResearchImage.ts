@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/genai";
 import { withRetry } from "./geminiRetry";
 
 // 1. Robust Key Access (matching your other file)
