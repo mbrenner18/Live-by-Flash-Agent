@@ -1,14 +1,19 @@
-import { GoogleGenerativeAI } from '@google/genai';
+import * as GenAI from '@google/genai';
 import type { PaperRecord } from '../types';
 
-// The "Vite-Proof" Key Selector:
-// Reinforced to check every possible environment bridge
+/**
+ * THE INDESTRUCTIBLE KEY SELECTOR
+ * Checks Vite meta, Node process, and fallback prefixes.
+ */
 const apiKey = 
   (import.meta as any).env?.VITE_GEMINI_API_KEY || 
   (import.meta as any).env?.GEMINI_API_KEY ||
-  (typeof process !== 'undefined' ? process.env.VITE_GEMINI_API_KEY : '') || 
-  (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || 
+  (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
+  (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
   '';
+
+// Access the class through the namespace to bypass Rollup export issues
+const GoogleGenerativeAI = (GenAI as any).GoogleGenerativeAI || (GenAI as any).default?.GoogleGenerativeAI;
 
 if (!apiKey) {
   console.warn('Missing GEMINI_API_KEY - Check Cloud Build Substitution Variables');
@@ -135,7 +140,6 @@ Rules:
     const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      // Use cast to any if the SDK types for tools are being finicky with urlContext
       tools: [{ urlContext: {} }] as any,
     });
 
@@ -143,53 +147,29 @@ Rules:
     const text = extractTextFromResponse(response);
     const parsed = extractJsonObject(text);
 
-    const urlMetadata =
-      (response as any)?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
-    const retrievalStatus =
-      Array.isArray(urlMetadata) && urlMetadata[Retrieved_Index_0]?.urlRetrievalStatus
+    const urlMetadata = (response as any)?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
+    const retrievalStatus = 
+      Array.isArray(urlMetadata) && urlMetadata[0]?.urlRetrievalStatus
         ? String(urlMetadata[0].urlRetrievalStatus)
         : 'UNKNOWN';
 
     return {
       ok: true,
-      title:
-        typeof parsed?.title === 'string' && parsed.title.trim()
-          ? parsed.title.trim()
-          : fallbackTitleFromUrl(url),
-      abstract:
-        typeof parsed?.abstract === 'string' && parsed.abstract.trim()
-          ? parsed.abstract.trim()
-          : `Imported from ${domain}. Gemini accessed the source but did not return a usable abstract.`,
-      theme:
-        typeof parsed?.theme === 'string' && parsed.theme.trim()
-          ? parsed.theme.trim()
-          : 'Imported Source',
-      locationLabel:
-        typeof parsed?.locationLabel === 'string' && parsed.locationLabel.trim()
-          ? parsed.locationLabel.trim()
-          : undefined,
-      citation:
-        typeof parsed?.citation === 'string' && parsed.citation.trim()
-          ? parsed.citation.trim()
-          : `Imported from ${domain}`,
-      year:
-        typeof parsed?.year === 'number' && Number.isFinite(parsed.year)
-          ? parsed.year
-          : undefined,
-      suggestedFrontierName:
-        typeof parsed?.suggestedFrontierName === 'string' &&
-        parsed.suggestedFrontierName.trim()
-          ? parsed.suggestedFrontierName.trim()
-          : undefined,
+      title: typeof parsed?.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitleFromUrl(url),
+      abstract: typeof parsed?.abstract === 'string' && parsed.abstract.trim() ? parsed.abstract.trim() : `Imported from ${domain}.`,
+      theme: typeof parsed?.theme === 'string' && parsed.theme.trim() ? parsed.theme.trim() : 'Imported Source',
+      locationLabel: typeof parsed?.locationLabel === 'string' ? parsed.locationLabel.trim() : undefined,
+      citation: typeof parsed?.citation === 'string' ? parsed.citation.trim() : `Imported from ${domain}`,
+      year: typeof parsed?.year === 'number' ? parsed.year : undefined,
+      suggestedFrontierName: typeof parsed?.suggestedFrontierName === 'string' ? parsed.suggestedFrontierName.trim() : undefined,
       retrievalStatus,
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
-
     return {
       ok: false,
       title: fallbackTitleFromUrl(url),
-      abstract: `Imported from ${domain}. Gemini could not reliably read the linked source, so this record is using fallback metadata.`,
+      abstract: `Imported from ${domain}. Gemini could not reliably read the linked source.`,
       theme: 'Imported Source',
       locationLabel: domain,
       citation: `Imported from ${domain} (${new Date().getFullYear()})`,
@@ -199,18 +179,9 @@ Rules:
   }
 }
 
-export async function enrichPaperRecordFromUrl(
-  paper: PaperRecord,
-): Promise<PaperRecord> {
-  if (!paper.sourceUrl) {
-    return {
-      ...paper,
-      ingestStatus: 'failed',
-    };
-  }
-
+export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<PaperRecord> {
+  if (!paper.sourceUrl) return { ...paper, ingestStatus: 'failed' };
   const enriched = await readPaperFromUrl(paper.sourceUrl);
-
   return {
     ...paper,
     title: enriched.title || paper.title,
