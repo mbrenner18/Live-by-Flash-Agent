@@ -12,27 +12,45 @@ const apiKey =
   (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
   '';
 
-// Access the class through the namespace to bypass Rollup export issues
-const GoogleGenerativeAI = (GenAI as any).GoogleGenerativeAI || (GenAI as any).default?.GoogleGenerativeAI;
+// --- FIX: SAFE CLASS SELECTOR ---
+// This prevents the "PH is not a constructor" error by finding the class
+// regardless of how Vite/Rollup bundled the @google/genai package.
+const getGoogleAIClass = () => {
+  const G = GenAI as any;
+  if (G.GoogleGenerativeAI) return G.GoogleGenerativeAI;
+  if (G.default?.GoogleGenerativeAI) return G.default.GoogleGenerativeAI;
+  return G.default; // Final fallback
+};
+
+const GoogleGenerativeAI = getGoogleAIClass();
 
 if (!apiKey) {
   console.warn('Missing GEMINI_API_KEY - Check Cloud Build Substitution Variables');
 }
 
-export const ai = new GoogleGenerativeAI(apiKey);
+/**
+ * We export the instance. Using a try-catch here ensures that even if 
+ * the constructor fails, the whole JS file doesn't crash (preventing the Black Screen).
+ */
+export const ai = (() => {
+  try {
+    return new GoogleGenerativeAI(apiKey);
+  } catch (e) {
+    console.error('Failed to initialize GoogleGenerativeAI:', e);
+    return null; // Return null so the app can still render other parts
+  }
+})();
 
 export function hasGeminiKey() {
-  return !!apiKey;
+  return !!apiKey && !!ai;
 }
 
 function extractTextFromResponse(response: any): string {
   if (typeof response?.text === 'string' && response.text.trim()) {
     return response.text.trim();
   }
-
   const candidate = response?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
-
   return parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
     .join('')
@@ -43,11 +61,9 @@ function extractJsonObject(text: string) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('No JSON object found in Gemini response');
   }
-
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
@@ -61,21 +77,19 @@ function domainFromUrl(url: string): string {
 
 function fallbackTitleFromUrl(url: string): string {
   const domain = domainFromUrl(url);
-
   if (domain.includes('springer.com')) return 'Springer article';
   if (domain.includes('pnas.org')) return 'PNAS article';
   if (domain.includes('box.com')) return 'Shared research document';
   if (domain.includes('ny.gov')) return 'Government report';
-
   return `Source from ${domain}`;
 }
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
+  if (!ai) return 'AI Client not initialized';
   const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
   const response = await model.generateContent({
     contents: [{ parts: [{ text: prompt }] }],
   });
-
   return extractTextFromResponse(response.response);
 }
 
@@ -109,13 +123,8 @@ export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
 
   const prompt = `
 Read the source at this URL and return ONLY valid JSON.
-
-URL:
-${url}
-
-Goal:
-Extract a research-style record that can be used for clustering.
-
+URL: ${url}
+Goal: Extract a research-style record that can be used for clustering.
 Return exactly this JSON shape:
 {
   "title": "string",
@@ -126,7 +135,6 @@ Return exactly this JSON shape:
   "year": 2024,
   "suggestedFrontierName": "string"
 }
-
 Rules:
 - Read the linked source itself.
 - Prefer the actual paper/report title over the domain name.
