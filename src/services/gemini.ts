@@ -1,20 +1,20 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 // The "Vite-Proof" Key Selector:
-// It checks the Vite-specific meta first, then falls back to standard process.env
+// Reinforced to check every possible environment bridge
 const apiKey = 
   (import.meta as any).env?.VITE_GEMINI_API_KEY || 
   (import.meta as any).env?.GEMINI_API_KEY ||
-  process.env.VITE_GEMINI_API_KEY || 
-  process.env.GEMINI_API_KEY || 
+  (typeof process !== 'undefined' ? process.env.VITE_GEMINI_API_KEY : '') || 
+  (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || 
   '';
 
 if (!apiKey) {
   console.warn('Missing GEMINI_API_KEY - Check Cloud Build Substitution Variables');
 }
 
-export const ai = new GoogleGenAI({ apiKey });
+export const ai = new GoogleGenerativeAI(apiKey);
 
 export function hasGeminiKey() {
   return !!apiKey;
@@ -66,12 +66,12 @@ function fallbackTitleFromUrl(url: string): string {
 }
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
-  const response = await ai.models.generateContent({
-    model: 'gemini-1.5-flash', // Updated to stable 1.5 flash for reliable hackathon use
+  const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const response = await model.generateContent({
     contents: [{ parts: [{ text: prompt }] }],
   });
 
-  return extractTextFromResponse(response);
+  return extractTextFromResponse(response.response);
 }
 
 export type ReadPaperResult = {
@@ -132,21 +132,21 @@ Rules:
 `.trim();
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
+    const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        tools: [{ urlContext: {} }],
-      },
+      // Use cast to any if the SDK types for tools are being finicky with urlContext
+      tools: [{ urlContext: {} }] as any,
     });
 
+    const response = result.response;
     const text = extractTextFromResponse(response);
     const parsed = extractJsonObject(text);
 
     const urlMetadata =
-      response?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
+      (response as any)?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
     const retrievalStatus =
-      Array.isArray(urlMetadata) && urlMetadata[0]?.urlRetrievalStatus
+      Array.isArray(urlMetadata) && urlMetadata[Retrieved_Index_0]?.urlRetrievalStatus
         ? String(urlMetadata[0].urlRetrievalStatus)
         : 'UNKNOWN';
 
