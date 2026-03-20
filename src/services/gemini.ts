@@ -1,48 +1,38 @@
 import * as GenAI from '@google/genai';
 import type { PaperRecord } from '../types';
 
-/**
- * THE INDESTRUCTIBLE KEY SELECTOR
- * Checks Vite meta, Node process, and fallback prefixes.
- */
-const apiKey = 
-  (import.meta as any).env?.VITE_GEMINI_API_KEY || 
-  (import.meta as any).env?.GEMINI_API_KEY ||
-  (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
-  (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
-  '';
-
-// --- FIX: SAFE CLASS SELECTOR ---
-// This prevents the "PH is not a constructor" error by finding the class
-// regardless of how Vite/Rollup bundled the @google/genai package.
-const getGoogleAIClass = () => {
-  const G = GenAI as any;
-  if (G.GoogleGenerativeAI) return G.GoogleGenerativeAI;
-  if (G.default?.GoogleGenerativeAI) return G.default.GoogleGenerativeAI;
-  return G.default; // Final fallback
+const getApiKey = () => {
+  return (import.meta as any).env?.VITE_GEMINI_API_KEY || 
+         (import.meta as any).env?.GEMINI_API_KEY ||
+         (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
+         (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
+         '';
 };
 
-const GoogleGenerativeAI = getGoogleAIClass();
+function getAiClient() {
+  const key = getApiKey();
+  if (!key) {
+    console.warn('Missing GEMINI_API_KEY');
+    return null;
+  }
 
-if (!apiKey) {
-  console.warn('Missing GEMINI_API_KEY - Check Cloud Build Substitution Variables');
-}
-
-/**
- * We export the instance. Using a try-catch here ensures that even if 
- * the constructor fails, the whole JS file doesn't crash (preventing the Black Screen).
- */
-export const ai = (() => {
   try {
-    return new GoogleGenerativeAI(apiKey);
+    const G = GenAI as any;
+    const Constructor = G.GoogleGenerativeAI || G.default?.GoogleGenerativeAI || G.default;
+    
+    if (typeof Constructor !== 'function') {
+      throw new Error("Constructor not found in bundle");
+    }
+    
+    return new Constructor(key);
   } catch (e) {
     console.error('Failed to initialize GoogleGenerativeAI:', e);
-    return null; // Return null so the app can still render other parts
+    return null;
   }
-})();
+}
 
 export function hasGeminiKey() {
-  return !!apiKey && !!ai;
+  return !!getApiKey();
 }
 
 function extractTextFromResponse(response: any): string {
@@ -85,7 +75,9 @@ function fallbackTitleFromUrl(url: string): string {
 }
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
+  const ai = getAiClient();
   if (!ai) return 'AI Client not initialized';
+  
   const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
   const response = await model.generateContent({
     contents: [{ parts: [{ text: prompt }] }],
@@ -107,12 +99,13 @@ export type ReadPaperResult = {
 
 export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
   const domain = domainFromUrl(url);
+  const ai = getAiClient();
 
-  if (!hasGeminiKey()) {
+  if (!ai) {
     return {
       ok: false,
       title: fallbackTitleFromUrl(url),
-      abstract: `Imported from ${domain}. Gemini URL reading is unavailable because the API key is missing from the build.`,
+      abstract: `Gemini unavailable. Check API Key configuration.`,
       theme: 'Imported Source',
       locationLabel: domain,
       citation: `Imported from ${domain} (${new Date().getFullYear()})`,
