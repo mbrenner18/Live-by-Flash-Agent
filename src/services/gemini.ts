@@ -1,4 +1,4 @@
-import * as GenAI from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 /**
@@ -14,37 +14,19 @@ const getApiKey = () => {
 };
 
 /**
- * 2. Cached Constructor
- * Finds the GoogleGenerativeAI class once and saves it to prevent "Not a constructor" errors.
+ * 2. Client Initialization
+ * Using the modern GoogleGenAI class for the @google/genai package.
  */
-let CachedConstructor: any = null;
-
-function getAiConstructor() {
-  if (CachedConstructor) return CachedConstructor;
-
-  const G = GenAI as any;
-  // This covers all common JS bundling patterns (ESM, CJS, and Minified)
-  const Found = G.GoogleGenerativeAI || G.default?.GoogleGenerativeAI || G.default;
-  
-  if (typeof Found === 'function') {
-    CachedConstructor = Found;
-    return Found;
-  }
-  return null;
-}
-
 function getAiClient() {
   const key = getApiKey();
-  const Constructor = getAiConstructor();
-  
-  if (!key || !Constructor) {
-    if (!key) console.warn("Gemini: Missing API Key");
-    if (!Constructor) console.warn("Gemini: Constructor not found in bundle");
+  if (!key) {
+    console.warn("Gemini: Missing API Key");
     return null;
   }
 
   try {
-    return new Constructor(key);
+    // The new SDK uses this configuration object pattern
+    return new GoogleGenAI({ apiKey: key });
   } catch (e) {
     console.error('Gemini: Initialization failed', e);
     return null;
@@ -60,32 +42,38 @@ export function hasGeminiKey() {
  */
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
-  const ai = getAiClient();
-  if (!ai) return 'AI tool is still loading or key is missing.';
+  const client = getAiClient();
+  if (!client) return 'AI tool is still loading or key is missing.';
   
-  const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-  const response = await model.generateContent({
-    contents: [{ parts: [{ text: prompt }] }],
-  });
-  return extractTextFromResponse(response.response);
+  try {
+    // New SDK uses client.models.generateContent
+    const response = await client.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
+    
+    return extractTextFromResponse(response);
+  } catch (error) {
+    console.error('generateTextFromGemini failed:', error);
+    return 'Error generating text.';
+  }
 }
 
 export async function readPaperFromUrl(url: string): Promise<any> {
-  const ai = getAiClient();
-  if (!ai) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
+  const client = getAiClient();
+  if (!client) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
 
   const prompt = `Read the source at this URL and return ONLY valid JSON.
 URL: ${url}
 JSON shape: { "title": "string", "abstract": "string", "theme": "string", "locationLabel": "string", "citation": "string", "year": 2024 }`.trim();
 
   try {
-    const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    const result = await model.generateContent({
+    const result = await client.models.generateContent({
+      model: 'gemini-1.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      tools: [{ urlContext: {} }] as any,
     });
 
-    const text = extractTextFromResponse(result.response);
+    const text = extractTextFromResponse(result);
     const parsed = extractJsonObject(text);
 
     return {
@@ -118,13 +106,8 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
  */
 
 function extractTextFromResponse(response: any): string {
-  // Try the official SDK helper first
-  if (typeof response?.text === 'function') {
-    try { return response.text(); } catch (e) {}
-  }
-  
-  // Fallback for raw response objects
-  const candidate = response?.candidates?.[0];
+  // The new SDK returns a 'value' property containing the response data
+  const candidate = response?.value?.candidates?.[0] || response?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
   return parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
