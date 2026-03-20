@@ -1,10 +1,17 @@
 import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
-const apiKey = process.env.GEMINI_API_KEY || '';
+// The "Vite-Proof" Key Selector:
+// It checks the Vite-specific meta first, then falls back to standard process.env
+const apiKey = 
+  (import.meta as any).env?.VITE_GEMINI_API_KEY || 
+  (import.meta as any).env?.GEMINI_API_KEY ||
+  process.env.VITE_GEMINI_API_KEY || 
+  process.env.GEMINI_API_KEY || 
+  '';
 
 if (!apiKey) {
-  console.warn('Missing GEMINI_API_KEY');
+  console.warn('Missing GEMINI_API_KEY - Check Cloud Build Substitution Variables');
 }
 
 export const ai = new GoogleGenAI({ apiKey });
@@ -60,7 +67,7 @@ function fallbackTitleFromUrl(url: string): string {
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-1.5-flash', // Updated to stable 1.5 flash for reliable hackathon use
     contents: [{ parts: [{ text: prompt }] }],
   });
 
@@ -86,7 +93,7 @@ export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
     return {
       ok: false,
       title: fallbackTitleFromUrl(url),
-      abstract: `Imported from ${domain}. Gemini URL reading is unavailable because the API key is missing.`,
+      abstract: `Imported from ${domain}. Gemini URL reading is unavailable because the API key is missing from the build.`,
       theme: 'Imported Source',
       locationLabel: domain,
       citation: `Imported from ${domain} (${new Date().getFullYear()})`,
@@ -126,7 +133,7 @@ Rules:
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-1.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         tools: [{ urlContext: {} }],
