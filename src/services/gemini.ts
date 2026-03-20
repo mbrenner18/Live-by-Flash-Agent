@@ -3,7 +3,6 @@ import type { PaperRecord } from '../types';
 
 /**
  * 1. Environment Variable Selection
- * Picks the correct API key regardless of whether Vite or Node is running it.
  */
 const getApiKey = () => {
   return (import.meta as any).env?.VITE_GEMINI_API_KEY || 
@@ -15,7 +14,6 @@ const getApiKey = () => {
 
 /**
  * 2. Client Initialization
- * Using the modern GoogleGenAI class for the @google/genai package.
  */
 function getAiClient() {
   const key = getApiKey();
@@ -25,7 +23,6 @@ function getAiClient() {
   }
 
   try {
-    // The new SDK uses this configuration object pattern
     return new GoogleGenAI({ apiKey: key });
   } catch (e) {
     console.error('Gemini: Initialization failed', e);
@@ -39,6 +36,7 @@ export function hasGeminiKey() {
 
 /**
  * 3. Main AI Functions
+ * Updated for Gemini 2.5 Flash (2026 Compatibility)
  */
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
@@ -46,9 +44,8 @@ export async function generateTextFromGemini(prompt: string): Promise<string> {
   if (!client) return 'AI tool is still loading or key is missing.';
   
   try {
-    // New SDK uses client.models.generateContent
     const response = await client.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
     
@@ -65,11 +62,11 @@ export async function readPaperFromUrl(url: string): Promise<any> {
 
   const prompt = `Read the source at this URL and return ONLY valid JSON.
 URL: ${url}
-JSON shape: { "title": "string", "abstract": "string", "theme": "string", "locationLabel": "string", "citation": "string", "year": 2024 }`.trim();
+JSON shape: { "title": "string", "abstract": "string", "theme": "string", "locationLabel": "string", "citation": "string", "year": 2026 }`.trim();
 
   try {
     const result = await client.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
 
@@ -106,13 +103,15 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
  */
 
 function extractTextFromResponse(response: any): string {
-  // The new SDK returns a 'value' property containing the response data
+  // Accessing the response structure that matches your current debug logs
   const candidate = response?.value?.candidates?.[0] || response?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
-  return parts
+  const text = parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
     .join('')
     .trim();
+    
+  return text || "No response text available.";
 }
 
 function extractJsonObject(text: string) {
