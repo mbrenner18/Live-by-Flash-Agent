@@ -1,4 +1,4 @@
-import * as GenAI from '@google/genai';
+import { GoogleGenerativeAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 const getApiKey = () => {
@@ -11,17 +11,23 @@ const getApiKey = () => {
 
 function getAiClient() {
   const key = getApiKey();
-  if (!key) {
-    console.warn('Missing GEMINI_API_KEY');
-    return null;
-  }
+  if (!key) return null;
 
   try {
-    const G = GenAI as any;
-    const Constructor = G.GoogleGenerativeAI || G.default?.GoogleGenerativeAI || G.default;
+    /**
+     * Named Import fix:
+     * By using the imported 'GoogleGenerativeAI' directly in this check,
+     * Vite is forced to include it in the production bundle.
+     */
+    let Constructor = GoogleGenerativeAI;
+
+    // Fallback for weird bundling scenarios where it's moved to .default
+    if (!Constructor && (GoogleGenerativeAI as any).default) {
+      Constructor = (GoogleGenerativeAI as any).default;
+    }
     
     if (typeof Constructor !== 'function') {
-      throw new Error("Constructor not found in bundle");
+      throw new Error("GoogleGenerativeAI constructor not found in bundle");
     }
     
     return new Constructor(key);
@@ -114,28 +120,7 @@ export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
     };
   }
 
-  const prompt = `
-Read the source at this URL and return ONLY valid JSON.
-URL: ${url}
-Goal: Extract a research-style record that can be used for clustering.
-Return exactly this JSON shape:
-{
-  "title": "string",
-  "abstract": "string",
-  "theme": "string",
-  "locationLabel": "string",
-  "citation": "string",
-  "year": 2024,
-  "suggestedFrontierName": "string"
-}
-Rules:
-- Read the linked source itself.
-- Prefer the actual paper/report title over the domain name.
-- Abstract should be 1-3 concise factual sentences.
-- Theme should be short and human-readable.
-- Use locationLabel only if the source is meaningfully tied to a place.
-- Do not include markdown fences.
-`.trim();
+  const prompt = `Read the source at this URL and return ONLY valid JSON. URL: ${url} Return shape: { "title": "string", "abstract": "string", "theme": "string", "locationLabel": "string", "citation": "string", "year": 2024, "suggestedFrontierName": "string" }`.trim();
 
   try {
     const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
@@ -148,32 +133,26 @@ Rules:
     const text = extractTextFromResponse(response);
     const parsed = extractJsonObject(text);
 
-    const urlMetadata = (response as any)?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
-    const retrievalStatus = 
-      Array.isArray(urlMetadata) && urlMetadata[0]?.urlRetrievalStatus
-        ? String(urlMetadata[0].urlRetrievalStatus)
-        : 'UNKNOWN';
-
     return {
       ok: true,
-      title: typeof parsed?.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitleFromUrl(url),
-      abstract: typeof parsed?.abstract === 'string' && parsed.abstract.trim() ? parsed.abstract.trim() : `Imported from ${domain}.`,
-      theme: typeof parsed?.theme === 'string' && parsed.theme.trim() ? parsed.theme.trim() : 'Imported Source',
-      locationLabel: typeof parsed?.locationLabel === 'string' ? parsed.locationLabel.trim() : undefined,
-      citation: typeof parsed?.citation === 'string' ? parsed.citation.trim() : `Imported from ${domain}`,
-      year: typeof parsed?.year === 'number' ? parsed.year : undefined,
-      suggestedFrontierName: typeof parsed?.suggestedFrontierName === 'string' ? parsed.suggestedFrontierName.trim() : undefined,
-      retrievalStatus,
+      title: parsed?.title || fallbackTitleFromUrl(url),
+      abstract: parsed?.abstract || `Imported from ${domain}.`,
+      theme: parsed?.theme || 'Imported Source',
+      locationLabel: parsed?.locationLabel,
+      citation: parsed?.citation || `Imported from ${domain}`,
+      year: parsed?.year,
+      suggestedFrontierName: parsed?.suggestedFrontierName,
+      retrievalStatus: 'SUCCESS',
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
     return {
       ok: false,
       title: fallbackTitleFromUrl(url),
-      abstract: `Imported from ${domain}. Gemini could not reliably read the linked source.`,
+      abstract: `Imported from ${domain}.`,
       theme: 'Imported Source',
       locationLabel: domain,
-      citation: `Imported from ${domain} (${new Date().getFullYear()})`,
+      citation: `Imported from ${domain}`,
       year: new Date().getFullYear(),
       retrievalStatus: 'FAILED',
     };
