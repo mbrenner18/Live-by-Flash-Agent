@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/genai';
+import * as GenAI from '@google/genai';
 import type { PaperRecord } from '../types';
 
 const getApiKey = () => {
@@ -14,17 +14,9 @@ function getAiClient() {
   if (!key) return null;
 
   try {
-    /**
-     * Named Import fix:
-     * By using the imported 'GoogleGenerativeAI' directly in this check,
-     * Vite is forced to include it in the production bundle.
-     */
-    let Constructor = GoogleGenerativeAI;
-
-    // Fallback for weird bundling scenarios where it's moved to .default
-    if (!Constructor && (GoogleGenerativeAI as any).default) {
-      Constructor = (GoogleGenerativeAI as any).default;
-    }
+    // We use the namespace import (*) to ensure Vite doesn't tree-shake the class
+    const G = GenAI as any;
+    const Constructor = G.GoogleGenerativeAI || G.default?.GoogleGenerativeAI || G.default;
     
     if (typeof Constructor !== 'function') {
       throw new Error("GoogleGenerativeAI constructor not found in bundle");
