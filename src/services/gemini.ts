@@ -2,25 +2,28 @@ import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 /**
- * 1. Environment Variable Selection
+ * Environment Variable Selection
  */
 const getApiKey = () => {
-  return (import.meta as any).env?.VITE_GEMINI_API_KEY || 
-         (import.meta as any).env?.GEMINI_API_KEY ||
-         (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
-         (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
-         '';
+  return (
+    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
+    (import.meta as any).env?.GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
+    ''
+  );
 };
 
 /**
- * 2. Client Initialization
+ * Client Initialization
  */
 function getAiClient() {
   const key = getApiKey();
   if (!key) {
-    console.warn("Gemini: Missing API Key");
+    console.warn('Gemini: Missing API Key');
     return null;
   }
+
   try {
     return new GoogleGenAI({ apiKey: key });
   } catch (e) {
@@ -34,49 +37,80 @@ export function hasGeminiKey() {
 }
 
 /**
- * 3. Main AI Functions
+ * Text Generation
  */
 export async function generateTextFromGemini(prompt: string): Promise<string> {
   const client = getAiClient();
   if (!client) return 'AI tool is still loading or key is missing.';
-  
+
   try {
     const response = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
-    return extractTextFromResponse(response);
+
+    return extractTextFromResponse(response) || 'No response text available.';
   } catch (error) {
     console.error('generateTextFromGemini failed:', error);
     return 'Error generating text.';
   }
 }
 
-export async function readPaperFromUrl(url: string): Promise<any> {
+export type ReadPaperResult = {
+  ok: boolean;
+  title: string;
+  abstract: string;
+  theme?: string;
+  locationLabel?: string;
+  citation?: string;
+  year?: number;
+  retrieval_status?: string;
+  retrieval_meta?: string;
+  search_grounded?: boolean;
+};
+
+/**
+ * URL Reading with grounding
+ */
+export async function readPaperFromUrl(url: string): Promise<ReadPaperResult> {
   const client = getAiClient();
-  if (!client) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
+
+  if (!client) {
+    return {
+      ok: false,
+      title: 'Error',
+      abstract: 'AI not ready.',
+      retrieval_status: 'FAILED',
+      retrieval_meta: 'MISSING_API_KEY',
+      search_grounded: false,
+    };
+  }
 
   const prompt = `
 Read the source at this URL and return ONLY valid JSON.
-URL: ${url}
+
+URL:
+${url}
 
 Rules:
-- Primary: Extract content directly from the webpage.
-- Secondary: If the page is blocked/unreachable, use Google Search to verify the paper's title/abstract.
-- Set retrieval_status to "FAILED" ONLY if you cannot verify the content through either method.
-- If the year is not explicitly found, return 0.
-- NEVER guess or hallucinate details.
+- Primary: use the actual content retrieved from the webpage.
+- Secondary: if the URL is blocked or incomplete, use Google Search grounding to find reliable public metadata.
+- If both fail, set "retrieval_status" to "FAILED".
+- If the year is unknown, return 0. Do NOT guess or default to 2026.
+- Do NOT invent or guess details based on the URL string.
+- Do not include markdown fences.
 
-JSON shape: 
-{ 
-  "title": "string", 
-  "abstract": "string", 
-  "theme": "string", 
-  "locationLabel": "string", 
-  "citation": "string", 
+JSON shape:
+{
+  "title": "string",
+  "abstract": "string",
+  "theme": "string",
+  "locationLabel": "string",
+  "citation": "string",
   "year": 0,
   "retrieval_status": "SUCCESS" | "FAILED"
-}`.trim();
+}
+  `.trim();
 
   try {
     const result = await client.models.generateContent({
@@ -85,54 +119,96 @@ JSON shape:
       config: {
         tools: [
           { urlContext: {} },
-          { googleSearch: {} } 
+          { googleSearch: {} },
         ],
       },
     });
 
     const text = extractTextFromResponse(result);
-    if (!text) throw new Error("Empty response from model.");
+    if (!text) {
+      throw new Error('Empty response from model.');
+    }
 
     const parsed = extractJsonObject(text);
 
     const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
-    
+
     const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
-    const urlSucceeded = urlMetadata[0]?.urlRetrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS';
+    const retrievalMeta =
+      Array.isArray(urlMetadata) && urlMetadata[0]?.urlRetrievalStatus
+        ? String(urlMetadata[0].urlRetrievalStatus)
+        : 'UNKNOWN';
 
     const groundingMetadata = candidate?.groundingMetadata;
-    const searchSucceeded = !!(
-      groundingMetadata?.searchEntryPoint || 
-      (groundingMetadata?.groundingChunks?.length > 0) ||
-      (groundingMetadata?.webSearchQueries?.length > 0)
-    );
+    const searchGrounded =
+      !!groundingMetadata &&
+      (
+        (Array.isArray(groundingMetadata?.groundingChunks) &&
+          groundingMetadata.groundingChunks.length > 0) ||
+        (Array.isArray(groundingMetadata?.webSearchQueries) &&
+          groundingMetadata.webSearchQueries.length > 0)
+      );
 
-    console.log(`[Grounding Check] URL: ${urlSucceeded} | Search: ${searchSucceeded}`);
+    const modelStatus =
+      typeof parsed?.retrieval_status === 'string'
+        ? parsed.retrieval_status
+        : 'UNKNOWN';
 
-    const isVerified = urlSucceeded || searchSucceeded || parsed.retrieval_status === 'SUCCESS';
+    const urlSucceeded = retrievalMeta === 'URL_RETRIEVAL_STATUS_SUCCESS';
 
-    if (!isVerified) {
-      throw new Error("Content unreachable via direct link and search verification failed.");
+    if (!urlSucceeded && !searchGrounded && modelStatus === 'FAILED') {
+      return {
+        ok: false,
+        title: 'Source Unverified',
+        abstract:
+          'The agent could not safely retrieve this source. It may be restricted or behind a paywall.',
+        retrieval_status: 'FAILED',
+        retrieval_meta: retrievalMeta,
+        search_grounded: false,
+      };
     }
 
     return {
       ok: true,
-      ...parsed,
-      is_grounded: urlSucceeded || searchSucceeded
+      title: parsed?.title || 'Untitled source',
+      abstract: parsed?.abstract || 'Abstract unavailable.',
+      theme: parsed?.theme,
+      locationLabel: parsed?.locationLabel,
+      citation: parsed?.citation,
+      year: typeof parsed?.year === 'number' ? parsed.year : undefined,
+      retrieval_status: modelStatus,
+      retrieval_meta: retrievalMeta,
+      search_grounded: searchGrounded,
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
-    return { ok: false }; 
+    return {
+      ok: false,
+      title: 'Source Unverified',
+      abstract:
+        'The agent could not safely retrieve this source. It may be restricted or behind a paywall.',
+      retrieval_status: 'FAILED',
+      retrieval_meta: 'ERROR',
+      search_grounded: false,
+    };
   }
 }
 
-export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<PaperRecord> {
-  if (!paper.sourceUrl) return { ...paper, ingestStatus: 'failed' };
-  
+/**
+ * Preserve existing metadata if enrichment fails
+ */
+export async function enrichPaperRecordFromUrl(
+  paper: PaperRecord,
+): Promise<PaperRecord> {
+  if (!paper.sourceUrl) {
+    return {
+      ...paper,
+      ingestStatus: 'failed',
+    };
+  }
+
   const res = await readPaperFromUrl(paper.sourceUrl);
-  
-  // ✅ DATA PRESERVATION FIX: 
-  // If verification fails, return the original paper object exactly as is.
+
   if (!res.ok) {
     return {
       ...paper,
@@ -141,8 +217,6 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     };
   }
 
-  // ✅ NON-DESTRUCTIVE OVERWRITE:
-  // Only overwrite the year if the model returned a realistic year (not 0, not 2026).
   return {
     ...paper,
     title: res.title || paper.title,
@@ -150,19 +224,19 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     theme: res.theme || paper.theme,
     locationLabel: res.locationLabel || paper.locationLabel,
     citation: res.citation || paper.citation,
-    year: (res.year && res.year > 1900 && res.year < 2026) ? res.year : paper.year,
+    year: res.year || paper.year,
     ingestStatus: 'ready',
     isProvisional: false,
   };
 }
 
 /**
- * 4. Helper Utilities
+ * Helper Utilities
  */
 function extractTextFromResponse(response: any): string {
-  const candidate = response?.value?.candidates?.[0] || response?.candidates?.[0];
+  const candidate = response?.candidates?.[0] || response?.value?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
-  
+
   return parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
     .join('')
@@ -173,10 +247,10 @@ function extractJsonObject(text: string) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  
+
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('No JSON object found in response');
   }
-  
+
   return JSON.parse(cleaned.slice(start, end + 1));
 }
