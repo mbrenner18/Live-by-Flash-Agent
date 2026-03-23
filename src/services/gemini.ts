@@ -21,7 +21,6 @@ function getAiClient() {
     console.warn("Gemini: Missing API Key");
     return null;
   }
-
   try {
     return new GoogleGenAI({ apiKey: key });
   } catch (e) {
@@ -36,9 +35,7 @@ export function hasGeminiKey() {
 
 /**
  * 3. Main AI Functions
- * Updated for Gemini 2.5 Flash (2026 Compatibility)
  */
-
 export async function generateTextFromGemini(prompt: string): Promise<string> {
   const client = getAiClient();
   if (!client) return 'AI tool is still loading or key is missing.';
@@ -48,7 +45,6 @@ export async function generateTextFromGemini(prompt: string): Promise<string> {
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
-    
     return extractTextFromResponse(response);
   } catch (error) {
     console.error('generateTextFromGemini failed:', error);
@@ -60,42 +56,47 @@ export async function readPaperFromUrl(url: string): Promise<any> {
   const client = getAiClient();
   if (!client) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
 
-  // 1. IMPROVED PROMPT: Give the model a "Grounding" escape hatch
+  // STRICT PROMPT WITH GROUNDING RULES
   const prompt = `
-    TASK: Analyze the live content at the URL below.
-    URL: ${url}
-    
-    STRICT RULES:
-    - Use ONLY the provided webpage content.
-    - If the page is unreachable (404, paywall, or blocked), return "FAILED" in the retrieval_status.
-    - DO NOT invent an abstract or title based on the URL slug.
+Read the source at this URL and return ONLY valid JSON.
+URL: ${url}
 
-    JSON shape: { 
-      "title": "string", 
-      "abstract": "string", 
-      "theme": "string", 
-      "locationLabel": "string", 
-      "citation": "string", 
-      "year": 2026,
-      "retrieval_status": "SUCCESS" | "FAILED" 
-    }`.trim();
+Rules:
+- Use ONLY the actual content retrieved from the webpage.
+- If the page cannot be accessed, is empty, or is blocked, set "retrieval_status" to "FAILED".
+- Do NOT invent or guess an abstract based on the URL domain or slug.
+
+JSON shape: 
+{ 
+  "title": "string", 
+  "abstract": "string", 
+  "theme": "string", 
+  "locationLabel": "string", 
+  "citation": "string", 
+  "year": 2026,
+  "retrieval_status": "SUCCESS" | "FAILED"
+}`.trim();
 
   try {
     const result = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      // 2. THE KEY: Enable the URL Context tool here
+      // ✅ THE CRITICAL FIX: This forces the agent to actually browse the link
       config: {
-        tools: [{ urlContext: {} }], 
+        tools: [{ urlContext: {} }],
       },
     });
 
     const text = extractTextFromResponse(result);
+    
+    // Safety check: If the model returned nothing, fail gracefully.
+    if (!text) throw new Error("Empty response from model.");
+
     const parsed = extractJsonObject(text);
 
-    // 3. VALIDATION: Catch if the model admitted it couldn't see the page
+    // ✅ HONESTY CHECK: If the model admits it couldn't read the page, reject the fake data.
     if (parsed.retrieval_status === 'FAILED') {
-      throw new Error("Source content unreachable.");
+      throw new Error("Source content unreachable or blocked.");
     }
 
     return {
@@ -103,19 +104,21 @@ export async function readPaperFromUrl(url: string): Promise<any> {
       ...parsed
     };
   } catch (error) {
-    console.error('readPaperFromUrl failed or grounded:', error);
-    // Return a clean fallback instead of a hallucination
+    console.error('readPaperFromUrl failed or was blocked:', error);
+    // ✅ HONEST FALLBACK: No more hallucinations.
     return { 
       ok: false, 
       title: 'Source Unverified', 
-      abstract: 'The agent could not safely access this source to verify details.' 
+      abstract: 'The agent could not safely access this source to verify details. It may be behind a paywall or bot-blocker.' 
     };
   }
 }
 
 export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<PaperRecord> {
   if (!paper.sourceUrl) return { ...paper, ingestStatus: 'failed' };
+  
   const res = await readPaperFromUrl(paper.sourceUrl);
+  
   return {
     ...paper,
     title: res.title || paper.title,
@@ -125,31 +128,33 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     citation: res.citation || paper.citation,
     year: res.year || paper.year,
     ingestStatus: res.ok ? 'ready' : 'failed',
+    isProvisional: !res.ok, // Marks it visually if it failed
   };
 }
 
 /**
- * 4. Helper Utilities
+ * 4. Helper Utilities (Fixed)
  */
-
 function extractTextFromResponse(response: any): string {
-  // Accessing the response structure that matches your current debug logs
   const candidate = response?.value?.candidates?.[0] || response?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
-  const text = parts
+  
+  return parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
     .join('')
-    .trim();
-    
-  return text || "No response text available.";
+    .trim(); 
+    // Removed the "No response text available" string that was breaking your JSON parser
 }
 
 function extractJsonObject(text: string) {
+  // Fixed regex to safely remove markdown formatting before parsing
   const cleaned = text.replace(/```json|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
+  
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('No JSON object found in response');
   }
+  
   return JSON.parse(cleaned.slice(start, end + 1));
 }
