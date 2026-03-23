@@ -63,6 +63,7 @@ URL: ${url}
 Rules:
 - Primary: Extract content directly from the webpage.
 - Secondary: If the page is blocked/unreachable, use Google Search to verify the paper's title/abstract.
+- If you find the paper but the year is missing, use 0. Do NOT default to 2026.
 - Set retrieval_status to "FAILED" ONLY if you cannot verify the content through either method.
 - NEVER guess or hallucinate details.
 
@@ -73,7 +74,7 @@ JSON shape:
   "theme": "string", 
   "locationLabel": "string", 
   "citation": "string", 
-  "year": 2026,
+  "year": number,
   "retrieval_status": "SUCCESS" | "FAILED"
 }`.trim();
 
@@ -96,11 +97,9 @@ JSON shape:
 
     const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
     
-    // Check 1: Direct URL Metadata
     const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
     const urlSucceeded = urlMetadata[0]?.urlRetrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS';
 
-    // Check 2: Google Search Grounding Metadata
     const groundingMetadata = candidate?.groundingMetadata;
     const searchSucceeded = !!(
       groundingMetadata?.searchEntryPoint || 
@@ -133,17 +132,17 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
   const res = await readPaperFromUrl(paper.sourceUrl);
   
   // ✅ DATA PRESERVATION FIX: 
-  // If verification fails, we return the original paper object.
-  // This keeps the metadata the cluster already has.
+  // If verification fails, we return the original paper object exactly as it was.
   if (!res.ok) {
     return {
       ...paper,
       ingestStatus: 'provisional',
-      isProvisional: true, // UI can use this to show a "Verification Restricted" badge
+      isProvisional: true, 
     };
   }
 
-  // Only overwrite if we have verified success
+  // ✅ VALIDATION OVERWRITE: Only update fields if AI actually found data.
+  // This prevents overwriting a good provisional year with a 0 or default.
   return {
     ...paper,
     title: res.title || paper.title,
@@ -151,7 +150,7 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     theme: res.theme || paper.theme,
     locationLabel: res.locationLabel || paper.locationLabel,
     citation: res.citation || paper.citation,
-    year: res.year || paper.year,
+    year: (res.year && res.year > 1900 && res.year <= 2026) ? res.year : paper.year,
     ingestStatus: 'ready',
     isProvisional: false,
   };
