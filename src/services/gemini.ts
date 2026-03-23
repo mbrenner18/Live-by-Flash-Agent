@@ -2,64 +2,106 @@ import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 /**
- * 1. Environment & Client Setup
- * Uses Vite-friendly environment variable detection.
+ * 1. Environment Variable Selection
  */
 const getApiKey = () => {
-  return (
-    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
-    (import.meta as any).env?.GEMINI_API_KEY ||
-    (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
-    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
-    ''
-  );
+  return (import.meta as any).env?.VITE_GEMINI_API_KEY || 
+         (import.meta as any).env?.GEMINI_API_KEY ||
+         (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
+         (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
+         '';
 };
 
-const apiKey = getApiKey();
-export const ai = new GoogleGenAI({ apiKey });
+/**
+ * 2. Client Initialization
+ */
+function getAiClient() {
+  const key = getApiKey();
+  if (!key) {
+    console.warn("Gemini: Missing API Key");
+    return null;
+  }
+  try {
+    return new GoogleGenAI({ apiKey: key });
+  } catch (e) {
+    console.error('Gemini: Initialization failed', e);
+    return null;
+  }
+}
 
 export function hasGeminiKey() {
-  return !!apiKey;
+  return !!getApiKey();
 }
 
 /**
- * 2. URL Reading with Actual Status Validation
+ * 3. Main AI Functions
  */
-export async function readPaperFromUrl(url: string) {
-  if (!hasGeminiKey()) return { ok: false };
+export async function readPaperFromUrl(url: string): Promise<any> {
+  const client = getAiClient();
+  if (!client) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
+
+  const prompt = `
+Read the source at this URL and return ONLY valid JSON.
+URL: ${url}
+
+Rules:
+- Primary: Extract content directly from the webpage.
+- Secondary: If the page is blocked/unreachable, use Google Search to verify the paper's title/abstract.
+- NEVER guess or hallucinate details. If blocked and search fails, return retrieval_status: "FAILED".
+
+JSON shape: 
+{ 
+  "title": "string", 
+  "abstract": "string", 
+  "theme": "string", 
+  "locationLabel": "string", 
+  "citation": "string", 
+  "year": 2026,
+  "retrieval_status": "SUCCESS" | "FAILED"
+}`.trim();
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: [{ 
-        role: 'user', 
-        parts: [{ text: `Read this URL and return ONLY valid JSON with keys: title, abstract, theme, citation, year. If year is unknown, return 0. URL: ${url}` }] 
-      }],
+    const result = await client.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
-        // urlContext for direct reading, googleSearch for "grounding" fallbacks
-        tools: [{ urlContext: {} }, { googleSearch: {} }] as any,
+        tools: [
+          { urlContext: {} } as any,
+          { googleSearch: {} } as any
+        ],
       },
     });
 
-    // VALIDATION: Don't just trust the JSON; check if the model actually "saw" the page
-    const candidate = response?.candidates?.[0];
-    const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
-    const retrievalStatus = urlMetadata[0]?.urlRetrievalStatus || 'UNKNOWN';
-    
-    // Check if Search Grounding found the info even if the direct link was blocked
-    const hasSearchGrounding = !!(candidate?.groundingMetadata?.groundingChunks?.length);
-    
-    // Success = The bot actually got in OR Search provided a valid backup
-    const isActuallySuccessful = 
-      retrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS' || hasSearchGrounding;
+    const text = extractTextFromResponse(result);
+    if (!text) throw new Error("Empty response from model.");
 
-    const text = extractTextFromResponse(response);
     const parsed = extractJsonObject(text);
 
+    const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
+    
+    // Direct URL Metadata
+    const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
+    const urlSucceeded = urlMetadata[0]?.urlRetrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS';
+
+    // Google Search Grounding Metadata
+    const groundingMetadata = candidate?.groundingMetadata;
+    const searchSucceeded = !!(
+      groundingMetadata?.searchEntryPoint || 
+      (groundingMetadata?.groundingChunks?.length > 0) ||
+      (groundingMetadata?.webSearchQueries?.length > 0)
+    );
+
+    // SUCCESS GATE: Either tool worked OR the model produced a valid JSON block it claims is success
+    const isVerified = urlSucceeded || searchSucceeded || parsed.retrieval_status === 'SUCCESS';
+
+    if (!isVerified) {
+      return { ok: false };
+    }
+
     return {
-      ok: isActuallySuccessful,
+      ok: true,
       ...parsed,
-      retrievalStatus
+      is_grounded: urlSucceeded || searchSucceeded
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
@@ -68,45 +110,43 @@ export async function readPaperFromUrl(url: string) {
 }
 
 /**
- * 3. Enrichment Logic (The Layer 1 vs Layer 2 Guard)
+ * 4. Enrichment (The "Do No Harm" Logic)
  */
-export async function enrichPaperRecordFromUrl(
-  paper: PaperRecord,
-): Promise<PaperRecord> {
+export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<PaperRecord> {
   if (!paper.sourceUrl) return { ...paper, ingestStatus: 'failed' };
-
-  const enriched = await readPaperFromUrl(paper.sourceUrl);
-
-  // If the AI was blocked (retrievalStatus !== SUCCESS), PROTECT the original data.
-  if (!enriched.ok) {
-    console.warn(`Retrieval blocked for ${paper.sourceUrl}. Keeping provisional data.`);
+  
+  const res = await readPaperFromUrl(paper.sourceUrl);
+  
+  // If retrieval failed, protect Layer 1. DO NOT overwrite with "Source Unverified"
+  if (!res.ok) {
     return {
       ...paper,
       ingestStatus: 'provisional',
-      isProvisional: true,
+      isProvisional: true
     };
   }
 
-  // If we got real data, merge it.
+  // Successful retrieval: Merge the data
   return {
     ...paper,
-    title: enriched.title || paper.title,
-    abstract: enriched.abstract || paper.abstract,
-    theme: enriched.theme || paper.theme,
-    citation: enriched.citation || paper.citation,
-    // Final check against the 2026 year hallucination
-    year: (enriched.year && enriched.year > 0 && enriched.year < 2026) ? enriched.year : paper.year,
+    title: res.title || paper.title,
+    abstract: res.abstract || paper.abstract,
+    theme: res.theme || paper.theme,
+    locationLabel: res.locationLabel || paper.locationLabel,
+    citation: res.citation || paper.citation,
+    year: res.year || paper.year,
     ingestStatus: 'ready',
     isProvisional: false,
   };
 }
 
 /**
- * 4. Helper Utilities
+ * 5. Helper Utilities
  */
 function extractTextFromResponse(response: any): string {
-  const candidate = response?.candidates?.[0];
+  const candidate = response?.value?.candidates?.[0] || response?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
+  
   return parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
     .join('')
@@ -117,20 +157,25 @@ function extractJsonObject(text: string) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('No JSON object found');
+  
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('No JSON object found in response');
+  }
+  
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
 export async function generateTextFromGemini(prompt: string): Promise<string> {
-  if (!hasGeminiKey()) return 'AI key missing.';
+  const client = getAiClient();
+  if (!client) return 'Key missing.';
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: [{ parts: [{ text: prompt }] }],
+    const response = await client.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
     return extractTextFromResponse(response);
   } catch (error) {
     console.error('generateTextFromGemini failed:', error);
-    return 'Error generating text.';
+    return 'Error.';
   }
 }
