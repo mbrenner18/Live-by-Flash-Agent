@@ -44,10 +44,10 @@ export async function generateTextFromGemini(prompt: string): Promise<string> {
   if (!client) return 'AI tool is still loading or key is missing.';
 
   try {
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    });
+    const response = await client.getGenerativeModel({ model: 'gemini-3-flash-preview' })
+      .generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      });
 
     return extractTextFromResponse(response) || 'No response text available.';
   } catch (error) {
@@ -113,8 +113,10 @@ JSON shape:
   `.trim();
 
   try {
-    const result = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
+    // UPDATED: Using gemini-3-flash-preview for better retrieval
+    const model = client.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    
+    const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         tools: [
@@ -131,7 +133,7 @@ JSON shape:
 
     const parsed = extractJsonObject(text);
 
-    const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
+    const candidate = result?.response?.candidates?.[0];
 
     const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
     const retrievalMeta =
@@ -234,7 +236,9 @@ export async function enrichPaperRecordFromUrl(
  * Helper Utilities
  */
 function extractTextFromResponse(response: any): string {
-  const candidate = response?.candidates?.[0] || response?.value?.candidates?.[0];
+  // Accessing response.response is standard for the JS SDK's generateContent result
+  const res = response.response || response;
+  const candidate = res?.candidates?.[0];
   const parts = candidate?.content?.parts ?? [];
 
   return parts
