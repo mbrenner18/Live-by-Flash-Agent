@@ -63,8 +63,8 @@ URL: ${url}
 Rules:
 - Primary: Extract content directly from the webpage.
 - Secondary: If the page is blocked/unreachable, use Google Search to verify the paper's title/abstract.
-- If the year is unknown, return 0.
 - Set retrieval_status to "FAILED" ONLY if you cannot verify the content through either method.
+- If the year is not explicitly found, return 0.
 - NEVER guess or hallucinate details.
 
 JSON shape: 
@@ -97,11 +97,9 @@ JSON shape:
 
     const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
     
-    // Check 1: Direct URL Metadata
     const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
     const urlSucceeded = urlMetadata[0]?.urlRetrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS';
 
-    // Check 2: Google Search Grounding Metadata
     const groundingMetadata = candidate?.groundingMetadata;
     const searchSucceeded = !!(
       groundingMetadata?.searchEntryPoint || 
@@ -134,16 +132,17 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
   const res = await readPaperFromUrl(paper.sourceUrl);
   
   // ✅ DATA PRESERVATION FIX: 
-  // If verification fails, we return the original paper object.
+  // If verification fails, return the original paper object exactly as is.
   if (!res.ok) {
     return {
       ...paper,
       ingestStatus: 'provisional',
-      isProvisional: true, 
+      isProvisional: true,
     };
   }
 
-  // Only overwrite if we have verified success, and protect the year
+  // ✅ NON-DESTRUCTIVE OVERWRITE:
+  // Only overwrite the year if the model returned a realistic year (not 0, not 2026).
   return {
     ...paper,
     title: res.title || paper.title,
@@ -151,8 +150,7 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     theme: res.theme || paper.theme,
     locationLabel: res.locationLabel || paper.locationLabel,
     citation: res.citation || paper.citation,
-    // Fix: Only overwrite the year if the model found a real date
-    year: (res.year && res.year > 1900 && res.year <= 2026) ? res.year : paper.year,
+    year: (res.year && res.year > 1900 && res.year < 2026) ? res.year : paper.year,
     ingestStatus: 'ready',
     isProvisional: false,
   };
