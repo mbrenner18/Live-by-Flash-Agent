@@ -82,10 +82,10 @@ JSON shape:
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
-        // ✅ DUAL-TOOL STRATEGY: URL Access + Google Search Backup
+        // ✅ UPDATED TOOL CONFIG: Switched to googleSearch for standard API compatibility
         tools: [
           { urlContext: {} },
-          { googleSearchRetrieval: {} } 
+          { googleSearch: {} } 
         ],
       },
     });
@@ -95,11 +95,13 @@ JSON shape:
 
     const parsed = extractJsonObject(text);
 
-    // 🕵️ VERIFICATION: Check tool metadata for actual success
-    const urlMetadata = result?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
+    // 🕵️ VERIFICATION: Extract metadata to see if grounding actually happened
+    // The candidate might contain groundings/metadata depending on tool success
+    const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
+    const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
     const retrievalStatus = urlMetadata[0]?.urlRetrievalStatus || 'UNKNOWN';
 
-    // If both the tool and the model admit defeat, trigger the fallback
+    // If both the tool failed and the model reports a failure in its text logic
     if (retrievalStatus !== 'URL_RETRIEVAL_STATUS_SUCCESS' && parsed.retrieval_status === 'FAILED') {
       throw new Error("Grounding check failed: Content unreachable.");
     }
