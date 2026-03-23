@@ -61,10 +61,10 @@ Read the source at this URL and return ONLY valid JSON.
 URL: ${url}
 
 Rules:
-- Primary: Use the actual content retrieved from the webpage.
-- Secondary: If the URL is blocked/paywalled, use your Google Search tool to find the paper's official abstract and metadata.
-- If both fail, set "retrieval_status" to "FAILED".
-- DO NOT invent or guess details based on the URL string.
+- Primary: Extract content directly from the webpage.
+- Secondary: If the page is blocked/unreachable, use Google Search to verify the paper's title/abstract.
+- Set retrieval_status to "FAILED" ONLY if you cannot verify the content through either method.
+- NEVER guess or hallucinate details.
 
 JSON shape: 
 { 
@@ -82,7 +82,6 @@ JSON shape:
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
-        // ✅ UPDATED TOOL CONFIG: Switched to googleSearch for standard API compatibility
         tools: [
           { urlContext: {} },
           { googleSearch: {} } 
@@ -95,28 +94,41 @@ JSON shape:
 
     const parsed = extractJsonObject(text);
 
-    // 🕵️ VERIFICATION: Extract metadata to see if grounding actually happened
-    // The candidate might contain groundings/metadata depending on tool success
+    // 🕵️ ADVANCED DUAL-VERIFICATION LOGIC
     const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
+    
+    // Check 1: Direct URL Metadata
     const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
-    const retrievalStatus = urlMetadata[0]?.urlRetrievalStatus || 'UNKNOWN';
+    const urlSucceeded = urlMetadata[0]?.urlRetrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS';
 
-    // If both the tool failed and the model reports a failure in its text logic
-    if (retrievalStatus !== 'URL_RETRIEVAL_STATUS_SUCCESS' && parsed.retrieval_status === 'FAILED') {
-      throw new Error("Grounding check failed: Content unreachable.");
+    // Check 2: Google Search Grounding Metadata
+    const groundingMetadata = candidate?.groundingMetadata;
+    const searchSucceeded = !!(
+      groundingMetadata?.searchEntryPoint || 
+      (groundingMetadata?.groundingChunks?.length > 0) ||
+      (groundingMetadata?.webSearchQueries?.length > 0)
+    );
+
+    console.log(`[Grounding Check] URL: ${urlSucceeded} | Search: ${searchSucceeded}`);
+
+    // ✅ SUCCESS GATE: Pass if either tool succeeded OR if the model claims success with the data
+    const isVerified = urlSucceeded || searchSucceeded || parsed.retrieval_status === 'SUCCESS';
+
+    if (!isVerified) {
+      throw new Error("Content unreachable via direct link and search verification failed.");
     }
 
     return {
       ok: true,
       ...parsed,
-      retrieval_meta: retrievalStatus
+      is_grounded: urlSucceeded || searchSucceeded
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
     return { 
       ok: false, 
       title: 'Source Unverified', 
-      abstract: 'The agent could not safely retrieve this source. It may be restricted or behind a paywall.' 
+      abstract: 'The agent could not safely verify this source. Access may be restricted or content was not found in the search index.' 
     };
   }
 }
