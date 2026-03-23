@@ -1,89 +1,85 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 /**
- * 1. Environment & Client Initialization
- * Using Vite's import.meta for browser-side safety.
+ * 1. Environment & Client Setup
+ * Uses Vite-friendly environment variable detection.
  */
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
-const genAI = new GoogleGenerativeAI(API_KEY);
+const getApiKey = () => {
+  return (
+    (import.meta as any).env?.VITE_GEMINI_API_KEY ||
+    (import.meta as any).env?.GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env?.VITE_GEMINI_API_KEY : '') ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') ||
+    ''
+  );
+};
+
+const apiKey = getApiKey();
+export const ai = new GoogleGenAI({ apiKey });
 
 export function hasGeminiKey() {
-  return !!API_KEY;
+  return !!apiKey;
 }
 
 /**
- * 2. The Core Retrieval Logic (Studio-Style)
+ * 2. URL Reading with Actual Status Validation
  */
 export async function readPaperFromUrl(url: string) {
-  if (!hasGeminiKey()) {
-    return { ok: false, error: "Missing API Key" };
-  }
-
-  // Target the Gemini 3 Flash model for the hackathon
-  const model = genAI.getGenerativeModel({ 
-    model: "gemini-3-flash-preview" 
-  });
-
-  const prompt = `
-Read the source at this URL and return ONLY valid JSON.
-URL: ${url}
-
-Return exactly this JSON shape:
-{
-  "title": "string",
-  "abstract": "string",
-  "theme": "string",
-  "citation": "string",
-  "year": 2024
-}
-
-Rules:
-- Read the content at the link.
-- If the year is unknown, return 0. (No 2026 hallucinations).
-- Abstract: 1-3 factual sentences.
-- Do not include markdown fences.
-`.trim();
+  if (!hasGeminiKey()) return { ok: false };
 
   try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: [{ 
+        role: 'user', 
+        parts: [{ text: `Read this URL and return ONLY valid JSON with keys: title, abstract, theme, citation, year. If year is unknown, return 0. URL: ${url}` }] 
+      }],
       config: {
-        tools: [
-          { urlContext: {} } as any,
-          { googleSearch: {} } as any
-        ],
-      }
+        // urlContext for direct reading, googleSearch for "grounding" fallbacks
+        tools: [{ urlContext: {} }, { googleSearch: {} }] as any,
+      },
     });
 
-    const text = result.response.text();
-    const cleanedText = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(cleanedText);
+    // VALIDATION: Don't just trust the JSON; check if the model actually "saw" the page
+    const candidate = response?.candidates?.[0];
+    const urlMetadata = candidate?.urlContextMetadata?.urlMetadata ?? [];
+    const retrievalStatus = urlMetadata[0]?.urlRetrievalStatus || 'UNKNOWN';
+    
+    // Check if Search Grounding found the info even if the direct link was blocked
+    const hasSearchGrounding = !!(candidate?.groundingMetadata?.groundingChunks?.length);
+    
+    // Success = The bot actually got in OR Search provided a valid backup
+    const isActuallySuccessful = 
+      retrievalStatus === 'URL_RETRIEVAL_STATUS_SUCCESS' || hasSearchGrounding;
+
+    const text = extractTextFromResponse(response);
+    const parsed = extractJsonObject(text);
 
     return {
-      ok: true,
-      ...parsed
+      ok: isActuallySuccessful,
+      ...parsed,
+      retrievalStatus
     };
   } catch (error) {
-    console.error('Gemini URL Retrieval Failed:', error);
+    console.error('readPaperFromUrl failed:', error);
     return { ok: false };
   }
 }
 
 /**
- * 3. Enrichment Logic (The "Layer 1 vs Layer 2" Rule)
- * This ensures your app NEVER breaks when a URL is blocked.
+ * 3. Enrichment Logic (The Layer 1 vs Layer 2 Guard)
  */
 export async function enrichPaperRecordFromUrl(
   paper: PaperRecord,
 ): Promise<PaperRecord> {
   if (!paper.sourceUrl) return { ...paper, ingestStatus: 'failed' };
 
-  // Attempt to enhance the record
-  const res = await readPaperFromUrl(paper.sourceUrl);
+  const enriched = await readPaperFromUrl(paper.sourceUrl);
 
-  // If AI fails (blocked, paywalled, or error), PRESERVE Layer 1 data.
-  if (!res.ok) {
+  // If the AI was blocked (retrievalStatus !== SUCCESS), PROTECT the original data.
+  if (!enriched.ok) {
+    console.warn(`Retrieval blocked for ${paper.sourceUrl}. Keeping provisional data.`);
     return {
       ...paper,
       ingestStatus: 'provisional',
@@ -91,32 +87,50 @@ export async function enrichPaperRecordFromUrl(
     };
   }
 
-  // If AI succeeds, merge it carefully.
+  // If we got real data, merge it.
   return {
     ...paper,
-    title: res.title && res.title !== 'Untitled' ? res.title : paper.title,
-    abstract: res.abstract || paper.abstract,
-    theme: res.theme || paper.theme,
-    citation: res.citation || paper.citation,
-    // Protect against the 2026 bug
-    year: (res.year && res.year > 1900 && res.year < 2026) ? res.year : paper.year,
+    title: enriched.title || paper.title,
+    abstract: enriched.abstract || paper.abstract,
+    theme: enriched.theme || paper.theme,
+    citation: enriched.citation || paper.citation,
+    // Final check against the 2026 year hallucination
+    year: (enriched.year && enriched.year > 0 && enriched.year < 2026) ? enriched.year : paper.year,
     ingestStatus: 'ready',
     isProvisional: false,
   };
 }
 
 /**
- * 4. General Purpose Text Generation
+ * 4. Helper Utilities
  */
+function extractTextFromResponse(response: any): string {
+  const candidate = response?.candidates?.[0];
+  const parts = candidate?.content?.parts ?? [];
+  return parts
+    .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+    .join('')
+    .trim();
+}
+
+function extractJsonObject(text: string) {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error('No JSON object found');
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
 export async function generateTextFromGemini(prompt: string): Promise<string> {
-  if (!hasGeminiKey()) return "AI key missing.";
-  
+  if (!hasGeminiKey()) return 'AI key missing.';
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
-    const result = await model.generateContent(prompt);
-    return result.response.text();
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: [{ parts: [{ text: prompt }] }],
+    });
+    return extractTextFromResponse(response);
   } catch (error) {
-    console.error('Gemini text generation failed:', error);
-    return "Error generating text.";
+    console.error('generateTextFromGemini failed:', error);
+    return 'Error generating text.';
   }
 }
