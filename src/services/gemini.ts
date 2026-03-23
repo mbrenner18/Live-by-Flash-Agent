@@ -94,7 +94,6 @@ JSON shape:
 
     const parsed = extractJsonObject(text);
 
-    // 🕵️ ADVANCED DUAL-VERIFICATION LOGIC
     const candidate = result?.candidates?.[0] || result?.value?.candidates?.[0];
     
     // Check 1: Direct URL Metadata
@@ -111,7 +110,6 @@ JSON shape:
 
     console.log(`[Grounding Check] URL: ${urlSucceeded} | Search: ${searchSucceeded}`);
 
-    // ✅ SUCCESS GATE: Pass if either tool succeeded OR if the model claims success with the data
     const isVerified = urlSucceeded || searchSucceeded || parsed.retrieval_status === 'SUCCESS';
 
     if (!isVerified) {
@@ -125,11 +123,7 @@ JSON shape:
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
-    return { 
-      ok: false, 
-      title: 'Source Unverified', 
-      abstract: 'The agent could not safely verify this source. Access may be restricted or content was not found in the search index.' 
-    };
+    return { ok: false }; 
   }
 }
 
@@ -138,6 +132,18 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
   
   const res = await readPaperFromUrl(paper.sourceUrl);
   
+  // ✅ DATA PRESERVATION FIX: 
+  // If verification fails, we return the original paper object.
+  // This keeps the metadata the cluster already has.
+  if (!res.ok) {
+    return {
+      ...paper,
+      ingestStatus: 'provisional',
+      isProvisional: true, // UI can use this to show a "Verification Restricted" badge
+    };
+  }
+
+  // Only overwrite if we have verified success
   return {
     ...paper,
     title: res.title || paper.title,
@@ -146,8 +152,8 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     locationLabel: res.locationLabel || paper.locationLabel,
     citation: res.citation || paper.citation,
     year: res.year || paper.year,
-    ingestStatus: res.ok ? 'ready' : 'failed',
-    isProvisional: !res.ok,
+    ingestStatus: 'ready',
+    isProvisional: false,
   };
 }
 
