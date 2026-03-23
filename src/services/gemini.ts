@@ -60,26 +60,56 @@ export async function readPaperFromUrl(url: string): Promise<any> {
   const client = getAiClient();
   if (!client) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
 
-  const prompt = `Read the source at this URL and return ONLY valid JSON.
-URL: ${url}
-JSON shape: { "title": "string", "abstract": "string", "theme": "string", "locationLabel": "string", "citation": "string", "year": 2026 }`.trim();
+  // 1. IMPROVED PROMPT: Give the model a "Grounding" escape hatch
+  const prompt = `
+    TASK: Analyze the live content at the URL below.
+    URL: ${url}
+    
+    STRICT RULES:
+    - Use ONLY the provided webpage content.
+    - If the page is unreachable (404, paywall, or blocked), return "FAILED" in the retrieval_status.
+    - DO NOT invent an abstract or title based on the URL slug.
+
+    JSON shape: { 
+      "title": "string", 
+      "abstract": "string", 
+      "theme": "string", 
+      "locationLabel": "string", 
+      "citation": "string", 
+      "year": 2026,
+      "retrieval_status": "SUCCESS" | "FAILED" 
+    }`.trim();
 
   try {
     const result = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      // 2. THE KEY: Enable the URL Context tool here
+      config: {
+        tools: [{ urlContext: {} }], 
+      },
     });
 
     const text = extractTextFromResponse(result);
     const parsed = extractJsonObject(text);
+
+    // 3. VALIDATION: Catch if the model admitted it couldn't see the page
+    if (parsed.retrieval_status === 'FAILED') {
+      throw new Error("Source content unreachable.");
+    }
 
     return {
       ok: true,
       ...parsed
     };
   } catch (error) {
-    console.error('readPaperFromUrl failed:', error);
-    return { ok: false, title: 'Failed to read source' };
+    console.error('readPaperFromUrl failed or grounded:', error);
+    // Return a clean fallback instead of a hallucination
+    return { 
+      ok: false, 
+      title: 'Source Unverified', 
+      abstract: 'The agent could not safely access this source to verify details.' 
+    };
   }
 }
 
