@@ -63,7 +63,7 @@ URL: ${url}
 Rules:
 - Primary: Extract content directly from the webpage.
 - Secondary: If the page is blocked/unreachable, use Google Search to verify the paper's title/abstract.
-- If the year is not found, return 0. Do NOT default to 2026.
+- If the year is unknown, return 0.
 - Set retrieval_status to "FAILED" ONLY if you cannot verify the content through either method.
 - NEVER guess or hallucinate details.
 
@@ -74,7 +74,7 @@ JSON shape:
   "theme": "string", 
   "locationLabel": "string", 
   "citation": "string", 
-  "year": number,
+  "year": 0,
   "retrieval_status": "SUCCESS" | "FAILED"
 }`.trim();
 
@@ -133,8 +133,8 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
   
   const res = await readPaperFromUrl(paper.sourceUrl);
   
-  // ✅ DATA PRESERVATION: 
-  // If verification fails, return existing paper with its provisional metadata.
+  // ✅ DATA PRESERVATION FIX: 
+  // If verification fails, we return the original paper object.
   if (!res.ok) {
     return {
       ...paper,
@@ -143,8 +143,7 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     };
   }
 
-  // ✅ CONTROLLED UPDATE:
-  // Only update fields if they were successfully retrieved.
+  // Only overwrite if we have verified success, and protect the year
   return {
     ...paper,
     title: res.title || paper.title,
@@ -152,8 +151,8 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     theme: res.theme || paper.theme,
     locationLabel: res.locationLabel || paper.locationLabel,
     citation: res.citation || paper.citation,
-    // Fix: Only update year if it's a valid past year (not 0, not 2026).
-    year: (res.year && res.year > 1900 && res.year < 2026) ? res.year : paper.year,
+    // Fix: Only overwrite the year if the model found a real date
+    year: (res.year && res.year > 1900 && res.year <= 2026) ? res.year : paper.year,
     ingestStatus: 'ready',
     isProvisional: false,
   };
