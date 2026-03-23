@@ -56,15 +56,15 @@ export async function readPaperFromUrl(url: string): Promise<any> {
   const client = getAiClient();
   if (!client) return { ok: false, title: 'Error', abstract: 'AI not ready.' };
 
-  // STRICT PROMPT WITH GROUNDING RULES
   const prompt = `
 Read the source at this URL and return ONLY valid JSON.
 URL: ${url}
 
 Rules:
-- Use ONLY the actual content retrieved from the webpage.
-- If the page cannot be accessed, is empty, or is blocked, set "retrieval_status" to "FAILED".
-- Do NOT invent or guess an abstract based on the URL domain or slug.
+- Primary: Use the actual content retrieved from the webpage.
+- Secondary: If the URL is blocked/paywalled, use your Google Search tool to find the paper's official abstract and metadata.
+- If both fail, set "retrieval_status" to "FAILED".
+- DO NOT invent or guess details based on the URL string.
 
 JSON shape: 
 { 
@@ -81,35 +81,40 @@ JSON shape:
     const result = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      // ✅ THE CRITICAL FIX: This forces the agent to actually browse the link
       config: {
-        tools: [{ urlContext: {} }],
+        // ✅ DUAL-TOOL STRATEGY: URL Access + Google Search Backup
+        tools: [
+          { urlContext: {} },
+          { googleSearchRetrieval: {} } 
+        ],
       },
     });
 
     const text = extractTextFromResponse(result);
-    
-    // Safety check: If the model returned nothing, fail gracefully.
     if (!text) throw new Error("Empty response from model.");
 
     const parsed = extractJsonObject(text);
 
-    // ✅ HONESTY CHECK: If the model admits it couldn't read the page, reject the fake data.
-    if (parsed.retrieval_status === 'FAILED') {
-      throw new Error("Source content unreachable or blocked.");
+    // 🕵️ VERIFICATION: Check tool metadata for actual success
+    const urlMetadata = result?.candidates?.[0]?.urlContextMetadata?.urlMetadata ?? [];
+    const retrievalStatus = urlMetadata[0]?.urlRetrievalStatus || 'UNKNOWN';
+
+    // If both the tool and the model admit defeat, trigger the fallback
+    if (retrievalStatus !== 'URL_RETRIEVAL_STATUS_SUCCESS' && parsed.retrieval_status === 'FAILED') {
+      throw new Error("Grounding check failed: Content unreachable.");
     }
 
     return {
       ok: true,
-      ...parsed
+      ...parsed,
+      retrieval_meta: retrievalStatus
     };
   } catch (error) {
-    console.error('readPaperFromUrl failed or was blocked:', error);
-    // ✅ HONEST FALLBACK: No more hallucinations.
+    console.error('readPaperFromUrl failed:', error);
     return { 
       ok: false, 
       title: 'Source Unverified', 
-      abstract: 'The agent could not safely access this source to verify details. It may be behind a paywall or bot-blocker.' 
+      abstract: 'The agent could not safely retrieve this source. It may be restricted or behind a paywall.' 
     };
   }
 }
@@ -128,12 +133,12 @@ export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<Pape
     citation: res.citation || paper.citation,
     year: res.year || paper.year,
     ingestStatus: res.ok ? 'ready' : 'failed',
-    isProvisional: !res.ok, // Marks it visually if it failed
+    isProvisional: !res.ok,
   };
 }
 
 /**
- * 4. Helper Utilities (Fixed)
+ * 4. Helper Utilities
  */
 function extractTextFromResponse(response: any): string {
   const candidate = response?.value?.candidates?.[0] || response?.candidates?.[0];
@@ -142,12 +147,10 @@ function extractTextFromResponse(response: any): string {
   return parts
     .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
     .join('')
-    .trim(); 
-    // Removed the "No response text available" string that was breaking your JSON parser
+    .trim();
 }
 
 function extractJsonObject(text: string) {
-  // Fixed regex to safely remove markdown formatting before parsing
   const cleaned = text.replace(/```json|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
