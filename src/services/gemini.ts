@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import type { PaperRecord } from '../types';
 
 /**
- * 1. Environment & Client Setup
+ * Environment Variable Selection
  */
 const getApiKey = () => {
   return (
@@ -14,118 +14,140 @@ const getApiKey = () => {
   );
 };
 
-function getAiClient() {
-  const key = getApiKey();
-  if (!key) return null;
-  return new GoogleGenAI({ apiKey: key });
-}
+const apiKey = getApiKey();
+export const ai = new GoogleGenAI({ apiKey });
 
 export function hasGeminiKey() {
-  return !!getApiKey();
+  return !!apiKey;
 }
 
 /**
- * 2. Main Retrieval Function (Studio-Style)
+ * Helper Utilities (Exactly as in your AI Studio Export)
  */
-export async function readPaperFromUrl(url: string): Promise<any> {
-  const client = getAiClient();
-  if (!client) return { ok: false, error: 'Missing API Key' };
+function extractTextFromResponse(response: any): string {
+  // Try the simple text() method first (Standard SDK)
+  try {
+    if (response.text && typeof response.text === 'function') {
+      return response.text().trim();
+    }
+  } catch (e) {}
 
-  // Using Gemini 3 Flash for the hackathon edge
-  const model = client.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+  // Fallback to manual candidate parsing
+  const candidate = response?.candidates?.[0];
+  const parts = candidate?.content?.parts ?? [];
+  return parts
+    .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+    .join('')
+    .trim();
+}
+
+function extractJsonObject(text: string) {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('No JSON object found in Gemini response');
+  }
+
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+function domainFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return 'unknown source';
+  }
+}
+
+function fallbackTitleFromUrl(url: string): string {
+  const domain = domainFromUrl(url);
+  if (domain.includes('springer.com')) return 'Springer article';
+  if (domain.includes('pnas.org')) return 'PNAS article';
+  if (domain.includes('box.com')) return 'Shared research document';
+  if (domain.includes('ny.gov')) return 'Government report';
+  return `Source from ${domain}`;
+}
+
+/**
+ * URL Reading (The AI Studio Pattern)
+ */
+export async function readPaperFromUrl(url: string) {
+  const domain = domainFromUrl(url);
+  const model = ai.getGenerativeModel({ model: 'gemini-3-flash-preview' });
 
   const prompt = `
 Read the source at this URL and return ONLY valid JSON.
 URL: ${url}
 
-Goal: Extract a research-style record for clustering.
-
-Rules:
-- Read the content at the link. 
-- If you cannot access the link, use your internal knowledge/search to find the abstract.
-- If the publication year is not found, return 0. (Do NOT guess 2026).
-- Abstract should be 2-3 factual sentences.
-
-JSON shape:
+Return exactly this JSON shape:
 {
   "title": "string",
   "abstract": "string",
   "theme": "string",
+  "locationLabel": "string",
   "citation": "string",
-  "year": 0
-}`.trim();
+  "year": 0,
+  "suggestedFrontierName": "string"
+}
+
+Rules:
+- Read the linked source itself.
+- If the year is unknown, return 0.
+- Do not include markdown fences.
+`.trim();
 
   try {
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       tools: [
-        { urlContext: {} } as any, 
+        { urlContext: {} } as any,
         { googleSearch: {} } as any
       ],
     });
 
     const response = result.response;
-    const text = response.text();
+    const text = extractTextFromResponse(response);
     const parsed = extractJsonObject(text);
 
-    // We trust the JSON. If we got this far, the AI "read" it.
     return {
       ok: true,
       ...parsed,
+      retrievalStatus: 'SUCCESS'
     };
   } catch (error) {
     console.error('readPaperFromUrl failed:', error);
-    return { ok: false };
+    return {
+      ok: false,
+      title: fallbackTitleFromUrl(url),
+      abstract: `Imported from ${domain}. Fallback metadata used.`,
+      year: 0
+    };
   }
 }
 
-/**
- * 3. Enrichment Logic (Preserves Cluster Data)
- */
-export async function enrichPaperRecordFromUrl(
-  paper: PaperRecord,
-): Promise<PaperRecord> {
+export async function enrichPaperRecordFromUrl(paper: PaperRecord): Promise<PaperRecord> {
   if (!paper.sourceUrl) return { ...paper, ingestStatus: 'failed' };
 
-  const res = await readPaperFromUrl(paper.sourceUrl);
-
-  // If the AI fails completely, keep the provisional data from your cluster
-  if (!res.ok) {
-    return {
-      ...paper,
-      ingestStatus: 'provisional',
-      isProvisional: true,
-    };
-  }
+  const enriched = await readPaperFromUrl(paper.sourceUrl);
 
   return {
     ...paper,
-    title: res.title || paper.title,
-    abstract: res.abstract || paper.abstract,
-    theme: res.theme || paper.theme,
-    citation: res.citation || paper.citation,
-    // Only overwrite year if we found a valid past year
-    year: (res.year && res.year > 1900 && res.year < 2026) ? res.year : paper.year,
-    ingestStatus: 'ready',
-    isProvisional: false,
+    title: enriched.title || paper.title,
+    abstract: enriched.abstract || paper.abstract,
+    theme: enriched.theme || paper.theme,
+    locationLabel: enriched.locationLabel || paper.locationLabel,
+    citation: enriched.citation || paper.citation,
+    // Using the 0 guard to prevent 2026/future hallucinations
+    year: (enriched.year && enriched.year > 0 && enriched.year < 2026) ? enriched.year : paper.year,
+    ingestStatus: enriched.ok ? 'ready' : 'failed',
+    isProvisional: !enriched.ok,
   };
 }
 
-/**
- * 4. Helpers
- */
-function extractJsonObject(text: string) {
-  const cleaned = text.replace(/```json|```/g, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('No JSON found');
-  return JSON.parse(cleaned.slice(start, end + 1));
-}
-
 export async function generateTextFromGemini(prompt: string): Promise<string> {
-  const client = getAiClient();
-  if (!client) return 'Error';
-  const model = client.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+  const model = ai.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   const result = await model.generateContent(prompt);
-  return result.response.text();
+  return extractTextFromResponse(result.response);
 }
